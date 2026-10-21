@@ -317,6 +317,23 @@ table.tbl { border-collapse: collapse; width: 100%; font-size: 13px; }
 .filters { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; padding: 12px 16px; border-bottom: 1px solid var(--line-2); }
 .filters .input[type="search"] { width: 240px; max-width: 100%; }
 .empty { padding: 28px; text-align: center; color: var(--muted); }
+/* tables whose first column stays put while they scroll sideways */
+.freeze .stick, .freeze .stick2 { position: sticky; left: 0; z-index: 1; background: var(--panel); }
+.freeze .stick2 { left: 34px; box-shadow: 1px 0 0 var(--line-2); min-width: 300px; max-width: 360px; }
+@media (max-width: 700px) { .freeze .stick2 { min-width: 180px; } .freeze .metric-tbl .stick { min-width: 160px; } }
+.freeze th.stick, .freeze th.stick2 { z-index: 3; }
+.freeze .metric-tbl .stick { min-width: 230px; box-shadow: 1px 0 0 var(--line-2); }
+.freeze .tickcol { width: 34px; min-width: 34px; max-width: 34px; padding-right: 0; }
+.freeze tr.sel .stick, .freeze tr.sel .stick2 { background: var(--accent-soft); }
+.freeze tr.sect td { padding-top: 12px; }
+.mcell { display: inline-flex; gap: 7px; align-items: center; }
+.mcell input, .colpick input, .tickcol input { accent-color: var(--accent); margin: 0; }
+.linkish { border: 0; background: none; padding: 0; color: inherit; font: inherit; cursor: pointer; text-align: left; }
+.linkish:hover { color: var(--accent); text-decoration: underline; }
+.colpick { display: inline-flex; gap: 5px; align-items: center; cursor: pointer; font-weight: 600; }
+.colpick i, .swatch { width: 9px; height: 9px; border-radius: 2px; display: inline-block; flex: none; margin-right: 4px; vertical-align: 0; }
+.chart-scroll { overflow-x: auto; overflow-y: hidden; border: 1px solid var(--line-2); border-radius: 6px; background: var(--panel-2); padding: 6px 4px 0; }
+.chart-scroll svg { display: block; }
 
 /* ---------- drawer ---------- */
 .scrim { position: fixed; inset: 0; background: rgba(10, 18, 20, .28); z-index: 40; opacity: 0; transition: opacity .18s; }
@@ -13841,7 +13858,54 @@ UI.plot = (function () {
     return lines(Object.assign({}, o, { series: series, vlines: o.vlines }));
   }
 
-  return { Chrom: Chrom, lines: lines, sticks: sticks, scatter: scatter, bars: bars, hist: hist, ticks: ticks };
+  /* bars per sample: one group (or one stack) for every sample along x, as
+     wide as the bar width asks, so dozens of samples stay readable; the
+     caller puts the SVG in a sideways-scrolling box. Each bar is named on
+     hover. o: { samples: [names], series: [{label, color, values[]}],
+     stacked, barW, height, ymax, vfmt, unit, onPick(sampleIndex) } */
+  function sampleBars(o) {
+    var n = o.samples.length, ns = Math.max(1, o.series.length), bw = o.barW || 12;
+    var gw = (o.stacked ? bw : ns * bw) + Math.max(6, bw * 0.6);
+    var longest = o.samples.reduce(function (m, t) { return Math.max(m, String(t).length); }, 0);
+    var m = { l: 50, r: 14, t: 14, b: Math.min(130, 18 + longest * 5.6) };
+    var H = o.height || 300, W = m.l + m.r + Math.max(n, 1) * gw, ph = H - m.t - m.b;
+    var top = 0;
+    for (var i = 0; i < n; i++) {
+      var sum = 0;
+      o.series.forEach(function (q) { var v = q.values[i] || 0; if (o.stacked) sum += v; else top = Math.max(top, v); });
+      if (o.stacked) top = Math.max(top, sum);
+    }
+    var ymax = o.ymax || (top > 0 ? top * 1.08 : 1);
+    var svg = s('svg', { class: 'plot', viewBox: '0 0 ' + W + ' ' + H, width: W, height: H, role: 'img', 'aria-label': o.label || 'bar chart' });
+    var ys = function (v) { return m.t + ph - Math.min(v, ymax) / ymax * ph; };
+    ticks(0, ymax, 5).forEach(function (t) {
+      var y = Math.round(ys(t)) + 0.5;
+      svg.appendChild(s('line', { x1: m.l, x2: W - m.r, y1: y, y2: y, style: { stroke: 'var(--line-2)' } }));
+      svg.appendChild(s('text', { x: m.l - 6, y: y + 3.5, 'text-anchor': 'end' }, tickLabel(t, niceStep(ymax, 5)) + (o.unit || '')));
+    });
+    svg.appendChild(s('line', { x1: m.l, x2: W - m.r, y1: m.t + ph + 0.5, y2: m.t + ph + 0.5, style: { stroke: 'var(--line)' } }));
+    for (i = 0; i < n; i++) {
+      var gx = m.l + i * gw + Math.max(3, bw * 0.3), acc = 0;
+      var g = s('g', { style: { cursor: o.onPick ? 'pointer' : 'default' } });
+      o.series.forEach(function (q, qi) {
+        var v = q.values[i];
+        if (v === null || v === undefined || !(v > 0)) return;
+        var x = o.stacked ? gx : gx + qi * bw, y0 = ys(acc + (o.stacked ? 0 : 0)), y1 = o.stacked ? ys(acc + v) : ys(v);
+        var yb = o.stacked ? y0 : ys(0);
+        g.appendChild(s('rect', { x: x, y: Math.min(y1, yb), width: Math.max(1, bw - (o.stacked ? 0 : 1)), height: Math.max(0.5, Math.abs(yb - y1)),
+                                  style: { fill: col(q.color) } },
+          s('title', null, o.samples[i] + ' · ' + q.label + ': ' + (o.vfmt ? o.vfmt(v) : v.toFixed(2)))));
+        if (o.stacked) acc += v;
+      });
+      if (o.onPick) (function (k) { g.addEventListener('click', function () { o.onPick(k); }); })(i);
+      svg.appendChild(g);
+      var cx = m.l + i * gw + gw / 2;
+      svg.appendChild(s('text', { x: cx, y: m.t + ph + 10, 'text-anchor': 'end', transform: 'rotate(-50 ' + cx + ' ' + (m.t + ph + 10) + ')', class: 'lbl' }, o.samples[i]));
+    }
+    return svg;
+  }
+
+  return { Chrom: Chrom, lines: lines, sticks: sticks, scatter: scatter, bars: bars, hist: hist, ticks: ticks, sampleBars: sampleBars };
 })();
 
 /* ---- u03_struct.js ---- */
@@ -14250,7 +14314,7 @@ var APP = (function () {
   function addFiles(files) {
     var added = 0;
     Array.prototype.forEach.call(files, function (f) {
-      if (/\.json$/i.test(f.name)) { openAnalysis(f); return; }
+      if (/\.(json|gz)$/i.test(f.name)) { openAnalysis(f); return; }
       if (!/\.mzml$/i.test(f.name)) { UI.toast(f.name + ' is not an .mzML file'); return; }
       var run = { id: 'r' + (++seq), name: f.name.replace(/\.mzml$/i, ''), size: f.size, file: f, status: 'queued', source: 'file',
                   settings: Object.assign({}, A.settings) };
@@ -14304,9 +14368,59 @@ var APP = (function () {
     var doc = { format: 'murosense-analysis', version: 1, savedAt: new Date().toISOString(), name: run.name, settings: run.settings, result: copy };
     return UI.saveFile(run.name + '.murosense.json', JSON.stringify(doc), 'application/json');
   }
+  /* a whole session: every finished run with its result and settings, and the
+     user's libraries, in one file. It is written piece by piece (one run at a
+     time) and gzip-compressed where the browser can, so dozens of runs fit. */
+  function saveSession() {
+    var runs = A.runs.filter(function (r) { return r.status === 'done' && r.result; });
+    if (!runs.length) { UI.toast('No finished runs to save yet.'); return Promise.resolve(false); }
+    var parts = ['{"format":"murosense-session","version":1,"savedAt":' + JSON.stringify(new Date().toISOString()) +
+                 ',"libraries":' + JSON.stringify(A.libraries) + ',"current":' + JSON.stringify(runs.indexOf(A.currentRun())) + ',"runs":['];
+    runs.forEach(function (run, i) {
+      var copy = {};
+      Object.keys(run.result).forEach(function (k) { if (k !== 'byFstr') copy[k] = run.result[k]; });
+      parts.push((i ? ',' : '') + JSON.stringify({ name: run.name, source: run.source === 'example' ? 'example' : 'saved', settings: run.settings, result: copy }));
+    });
+    parts.push(']}');
+    var blob = new Blob(parts, { type: 'application/json' }), stamp = new Date().toISOString().slice(0, 10);
+    var name = 'MuroSense_session_' + stamp + '_' + runs.length + 'runs.murosense-session.json';
+    if (typeof CompressionStream === 'function') {
+      return new Response(blob.stream().pipeThrough(new CompressionStream('gzip'))).blob()
+        .then(function (gz) { return UI.saveFile(name + '.gz', gz, 'application/gzip'); })
+        .catch(function () { return UI.saveFile(name, blob, 'application/json'); });
+    }
+    return UI.saveFile(name, blob, 'application/json');
+  }
+  /* read a saved file, unpacking gzip when it is compressed */
+  function readDoc(file) {
+    return file.slice(0, 2).arrayBuffer().then(function (ab) {
+      var b = new Uint8Array(ab);
+      if (b[0] === 0x1f && b[1] === 0x8b) {
+        if (typeof DecompressionStream !== 'function') throw new Error('this browser cannot unpack compressed files');
+        return new Response(file.stream().pipeThrough(new DecompressionStream('gzip'))).text();
+      }
+      return UI.files.readText(file);
+    }).then(function (t) { return JSON.parse(t); });
+  }
+  function openSession(doc, fname) {
+    (doc.libraries || []).forEach(function (lib) { if (lib && lib.id && !getLibrary(lib.id) && Array.isArray(lib.glycans)) A.libraries.push(normLib(lib)); });
+    if ((doc.libraries || []).length) { persistLibraries(); A.emit('libraries'); }
+    var added = [];
+    (doc.runs || []).forEach(function (r) {
+      if (!r || !r.result) return;
+      var run = { id: 'r' + (++seq), name: r.name, size: r.result.run ? r.result.run.size : 0, status: 'done', source: r.source || 'saved',
+                  result: prepare(r.result), settings: r.settings || null, hasRaw: false };
+      A.runs.push(run); added.push(run);
+    });
+    if (!added.length) { UI.toast(fname + ' holds no runs.'); return; }
+    var cur = added[doc.current >= 0 && doc.current < added.length ? doc.current : 0];
+    A.current = cur.id; A.emit('runs');
+    if (A.view !== 'analyse' && A.view !== 'compare') show('analyse');
+    UI.toast('Session opened: ' + UI.plural(added.length, 'run') + '.');
+  }
   function openAnalysis(file) {
-    UI.files.readText(file).then(function (t) {
-      var doc = JSON.parse(t);
+    readDoc(file).then(function (doc) {
+      if (doc && doc.format === 'murosense-session') { openSession(doc, file.name); return; }
       if (doc && doc.format === 'murosense-library') { importLibraryDoc(doc, file.name); return; }
       if (!doc || !/^(murosense|sacculus)-analysis$/.test(doc.format || '') || !doc.result) throw new Error('not a MuroSense analysis');
       addResult(doc.name || file.name.replace(/\.json$/i, ''), doc.result, 'saved', doc.settings);
@@ -14468,7 +14582,7 @@ var APP = (function () {
       NAV.map(function (v) {
         return h('button', { role: 'tab', 'aria-selected': 'false', 'data-view': v, onclick: function () { show(v); } }, LABELS[v]);
       }));
-    var fileIn = h('input', { type: 'file', accept: '.json,application/json', hidden: true, onchange: function () { addFiles(fileIn.files); fileIn.value = ''; } });
+    var fileIn = h('input', { type: 'file', accept: '.json,.gz,application/json,application/gzip', multiple: true, hidden: true, onchange: function () { addFiles(fileIn.files); fileIn.value = ''; } });
     var theme = h('div', { class: 'theme', role: 'group', 'aria-label': 'Colour theme' },
       [['auto', 'auto', 'Follow the system'], ['light', 'sun', 'Light'], ['dark', 'moon', 'Dark']].map(function (o) {
         return h('button', { 'data-t': o[0], 'aria-pressed': A.theme === o[0] ? 'true' : 'false', title: o[2], 'aria-label': o[2] + ' theme', onclick: function () { applyTheme(o[0]); } }, UI.icon(o[1]));
@@ -14479,7 +14593,7 @@ var APP = (function () {
           h('span', null, wordmark(), h('small', null, 'muropeptide LC-MS'))),
         nav,
         h('div', { class: 'top-actions' }, theme,
-          h('button', { class: 'btn sm', title: 'Open a saved analysis or library (.json)', onclick: function () { fileIn.click(); } }, UI.icon('open'), h('span', null, 'Open')), fileIn))));
+          h('button', { class: 'btn sm', title: 'Open a saved analysis, session or library', onclick: function () { fileIn.click(); } }, UI.icon('open'), h('span', null, 'Open')), fileIn))));
     var main = h('main');
     VIEWS.forEach(function (v) { main.appendChild(h('section', { id: 'v-' + v, class: 'view', hidden: true, role: v === 'home' ? 'region' : 'tabpanel', 'aria-label': LABELS[v] })); });
     root.appendChild(main);
@@ -14510,7 +14624,7 @@ var APP = (function () {
   }
 
   A.addFiles = addFiles; A.reanalyse = reanalyse; A.remove = remove; A.byId = byId; A.query = query; A.settingsChanged = settingsChanged;
-  A.saveAnalysis = saveAnalysis; A.loadExample = loadExample; A.show = show; A.boot = boot; A.addResult = addResult; A.openAnalysis = openAnalysis;
+  A.saveAnalysis = saveAnalysis; A.saveSession = saveSession; A.loadExample = loadExample; A.show = show; A.boot = boot; A.addResult = addResult; A.openAnalysis = openAnalysis;
   A.logo = logo; A.wordmark = wordmark; A.applyTheme = applyTheme;
   A.getLibrary = getLibrary; A.saveLibrary = saveLibrary; A.deleteLibrary = deleteLibrary; A.libraryProfile = libraryProfile; A.normLib = normLib;
   A.exportLibrary = exportLibrary; A.importLibraryFile = importLibraryFile; A.profileOptions = profileOptions; A.profileLabel = profileLabel; A.libFromValue = libFromValue;
@@ -14628,7 +14742,7 @@ APP.views.analyse = (function () {
   }
   function renderRail() {
     UI.clear(rail);
-    var fileIn = h('input', { type: 'file', accept: '.mzML,.mzml,.json', multiple: true, hidden: true,
+    var fileIn = h('input', { type: 'file', accept: '.mzML,.mzml,.json,.gz', multiple: true, hidden: true,
                               onchange: function () { A.addFiles(fileIn.files); fileIn.value = ''; } });
     var list = h('div', { class: 'runs' });
     if (!A.runs.length) list.appendChild(h('p', { class: 'note' }, 'No runs yet. Add mzML files, or open the example.'));
@@ -14636,9 +14750,13 @@ APP.views.analyse = (function () {
     rail.appendChild(h('div', { class: 'ws-head' }, h('h3', null, 'Runs'),
       h('button', { class: 'btn sm primary', onclick: function () { fileIn.click(); } }, UI.icon('upload'), 'Add mzML'), fileIn,
       h('button', { class: 'btn sm ghost', title: 'Hide the runs panel', 'aria-label': 'Hide the runs panel', onclick: function () { setRail(false); } }, UI.icon('left'))));
+    var nDone = A.runs.filter(function (r) { return r.status === 'done' && r.result; }).length;
     rail.appendChild(h('div', { class: 'ws-rail-body' }, list,
-      A.runs.some(function (r) { return r.source === 'example'; }) ? null :
-        h('button', { class: 'btn sm ghost', style: { 'align-self': 'flex-start' }, onclick: A.loadExample }, 'Open the example analysis'),
+      h('div', { class: 'row', style: { gap: '6px' } },
+        nDone ? h('button', { class: 'btn sm', onclick: A.saveSession, title: 'Save every finished run, with its results and settings, in one file; open it later with Open to get the whole session back' },
+          UI.icon('download'), 'Save session (' + nDone + ')') : null,
+        A.runs.some(function (r) { return r.source === 'example'; }) ? null :
+          h('button', { class: 'btn sm ghost', onclick: A.loadExample }, 'Open the example')),
       settingsCard()));
     rail.appendChild(h('div', { class: 'ws-rail-foot', id: 'rail-foot' }));
     renderRailFoot();
@@ -14787,7 +14905,7 @@ APP.views.analyse = (function () {
     runPanes(run);
   }
   function emptyMain() {
-    var fileIn = h('input', { type: 'file', accept: '.mzML,.mzml,.json', multiple: true, hidden: true, onchange: function () { A.addFiles(fileIn.files); fileIn.value = ''; } });
+    var fileIn = h('input', { type: 'file', accept: '.mzML,.mzml,.json,.gz', multiple: true, hidden: true, onchange: function () { A.addFiles(fileIn.files); fileIn.value = ''; } });
     var drop = h('div', { class: 'drop', style: { 'max-width': '560px' } },
       h('h3', null, 'Drop mzML files here'),
       h('p', { class: 'muted' }, 'Centroided mzML converted with msConvert. Waters MSᴱ fragments are used as evidence; other files are searched on MS1 alone. Nothing is uploaded.'),
@@ -15079,7 +15197,7 @@ APP.tabs = (function () {
   }
 
   /* ---------------- unexplained ---------------- */
-  var unexMode = null;
+  var unexMode = null, unexSort = { key: 'area', dir: -1 };
   function isMuro(u) { return !!(u.gen && (u.gen.y || u.gen.oxo)); }
   function unexplained(run) {
     var R = run.result, all = R.unidentified || [];
@@ -15096,16 +15214,31 @@ APP.tabs = (function () {
       'Features with a proper isotope envelope that nothing in the search space explains at the chosen FDR, largest first. Muropeptide-like ones fragment like muropeptides in the high-energy channel. ' +
       'The hint compares each mass with the identified species; “Resolve” lists candidate structures.')));
     if (!all.length) { wrap.appendChild(h('div', { class: 'empty' }, 'Every feature with an isotope envelope was explained.')); return wrap; }
-    wrap.appendChild(h('div', { class: 'tbl-wrap' }, h('table', { class: 'tbl click' },
-      h('thead', null, h('tr', null, h('th', { class: 'num' }, 'Mass'), h('th', { class: 'num' }, 'RT'), h('th', null, 'z'), h('th', { class: 'num' }, '% of all signal'),
-        h('th', null, 'Signature'), h('th', null, 'Hint'), h('th', null, ''))), tb)));
+    var heads = [['mass', 'Mass', true], ['rt', 'RT', true], ['z', 'z', false], ['area', '% of all signal', true], ['sig', 'Signature', false], ['hint', 'Hint', false]];
+    var hrow = h('tr', null, heads.map(function (c) {
+      var th = h('th', { class: (c[2] ? 'num ' : '') + 'sortable', 'aria-sort': unexSort.key === c[0] ? (unexSort.dir > 0 ? 'ascending' : 'descending') : null,
+        onclick: function () {
+          if (unexSort.key === c[0]) unexSort.dir *= -1; else unexSort = { key: c[0], dir: c[0] === 'area' || c[0] === 'sig' ? -1 : 1 };
+          UI.$$('th', hrow).forEach(function (t) { t.removeAttribute('aria-sort'); }); th.setAttribute('aria-sort', unexSort.dir > 0 ? 'ascending' : 'descending'); fill();
+        } }, c[1]);
+      return th;
+    }), h('th', null, ''));
+    wrap.appendChild(h('div', { class: 'tbl-wrap' }, h('table', { class: 'tbl click' }, h('thead', null, hrow), tb)));
     function fill() {
       UI.clear(tb);
       var list = all.filter(function (u) {
         if (unexMode === 'muro') return isMuro(u);
         if (unexMode === 'multi') return !isMuro(u) && u.charges.some(function (z) { return z >= 2; });
         return true;
-      }).sort(function (a, b) { return b.area - a.area; });
+      });
+      var val = function (u) {
+        var k = unexSort.key;
+        if (k === 'z') return Math.max.apply(null, u.charges);
+        if (k === 'sig') return (u.gen && u.gen.y ? 2 : 0) + (u.gen && u.gen.oxo ? 1 : 0);
+        if (k === 'hint') return u.hints && u.hints.length ? Math.abs(u.hints[0].delta) : Infinity;
+        return u[k];
+      };
+      list.sort(function (a, b) { return unexSort.dir * (val(a) - val(b)) || b.area - a.area; });
       if (!list.length) { tb.appendChild(h('tr', null, h('td', { colspan: 7, class: 'empty' }, 'None in this group.'))); return; }
       list.slice(0, 250).forEach(function (u) { tb.appendChild(unexRow(run, u, tot)); });
     }
@@ -15623,100 +15756,281 @@ APP.exports = (function () {
 /* ---- u15_compare.js ---- */
 /* ==========================================================================
    Compare: profile metrics and species abundances across runs.
+     - the metric table keeps its first column in place while it scrolls
+       sideways; clicking a metric orders the samples by it; ticked metrics
+       and ticked sample columns feed the chart
+     - the chart shows one group of bars per sample, so many samples stay
+       legible: the oligomer make-up stacked, one class at a time, or the
+       ticked metrics, with an adjustable bar width
+     - the species table sorts on any column, filters by name, class and
+       abundance, and plots the ticked species across the samples
    ========================================================================== */
 APP.views.compare = (function () {
   'use strict';
   var h = UI.h, A = APP;
-  var root, sel = {}, basis = 'ms', q = '';
-  var COLORS = ['--accent', '--uv', '--mur', '--glc', '--good', '--warn', '--bad', '--ink-2'];
+  var root, sel = {}, chartOff = {}, basis = 'ms';
+  var st = {
+    colSort: null,                         /* { m: metric index, dir } orders the sample columns */
+    view: 'oligo', order: 'table', barW: UI.store.get('cmpBarW', 12),
+    metricSel: {},                         /* metric index -> ticked */
+    q: '', spCls: 'all', spMin: 0, spSort: { key: 'mean', dir: -1 }, spSel: {}, spStack: false
+  };
+  var boxes = {};
+  var OLIGO = [['1', 'Monomers', '--glc'], ['2', 'Dimers', '--accent'], ['3', 'Trimers', '--mur'], ['4+', '≥ Tetramers', '--uv']];
+  var SERIES = ['--accent', '--uv', '--mur', '--glc', '--good', '--warn', '--bad', '--ink-2'];
 
   function mount(el) { root = el; A.on('runs', function () { if (A.view === 'compare') render(); }); }
   function done() { return A.runs.filter(function (r) { return r.status === 'done' && r.result; }); }
+  /* well-separated colours for any number of samples (golden-angle hues) */
+  function runColor(i) { return 'hsl(' + Math.round((i * 137.508 + 190) % 360) + ' 62% 52%)'; }
+  function seriesColor(i) { return i < SERIES.length ? SERIES[i] : 'hsl(' + Math.round((i * 137.508 + 40) % 360) + ' 58% 50%)'; }
+  function met(r) { return basis === 'uv' ? r.result.metricsUV : r.result.metrics; }
+  function metVal(m, r) { var x = met(r); return x && m[1] ? m[1](x) : null; }
+  function fmtMetric(m, v) { return v === null || v === undefined ? '–' : (m[3] === 'len' ? UI.fx(v, 0) : UI.pct(v, 1)); }
+  var colorOf = {};
+
   function render() {
     UI.clear(root);
     var runs = done();
     root.appendChild(h('div', { class: 'view-head' }, h('div', null, h('h2', null, 'Compare runs'),
       h('p', null, 'Profile metrics and species abundances side by side. Species are matched by composition, so isomers that elute apart are summed.'))));
     if (runs.length < 1) {
-      root.appendChild(h('div', { class: 'card' }, h('div', { class: 'empty' }, 'Analyse runs in Analyse, or open saved analyses, and they appear here.',
+      root.appendChild(h('div', { class: 'card' }, h('div', { class: 'empty' }, 'Analyse runs in Analyse, or open saved analyses or a session, and they appear here.',
         h('div', { style: { 'margin-top': '10px' } }, h('button', { class: 'btn', onclick: function () { A.show('analyse'); } }, 'Go to Analyse')))));
       return;
     }
-    runs.forEach(function (r) { if (sel[r.id] === undefined) sel[r.id] = true; });
-    var chosen = runs.filter(function (r) { return sel[r.id]; });
-    var hasUV = chosen.some(function (r) { return r.result.metricsUV; });
-    var pick = h('div', { class: 'row' }, runs.map(function (r, i) {
+    runs.forEach(function (r, i) { if (sel[r.id] === undefined) sel[r.id] = true; colorOf[r.id] = runColor(i); });
+    var hasUV = runs.some(function (r) { return r.result.metricsUV; });
+    if (basis === 'uv' && !hasUV) basis = 'ms';
+    /* sample picker */
+    var nSel = runs.filter(function (r) { return sel[r.id]; }).length;
+    var pick = h('div', { class: 'row', style: { gap: '6px' } }, runs.map(function (r) {
       var c = h('input', { type: 'checkbox', checked: !!sel[r.id], onchange: function () { sel[r.id] = c.checked; render(); } });
-      return h('label', { class: 'check chip', style: { padding: '3px 9px' } }, c, h('i', { style: { width: '10px', height: '10px', 'border-radius': '2px', display: 'inline-block', background: 'var(' + COLORS[i % COLORS.length] + ')' } }), r.name);
+      return h('label', { class: 'check chip', style: { padding: '3px 9px' } }, c, h('i', { style: { width: '10px', height: '10px', 'border-radius': '2px', display: 'inline-block', background: colorOf[r.id] } }), r.name);
     }));
+    function setAll(v) { runs.forEach(function (r) { sel[r.id] = v; }); render(); }
     var seg = h('div', { class: 'seg' }, [['ms', 'From MS'], ['uv', 'From UV']].map(function (o) {
       return h('button', { 'aria-pressed': basis === o[0] ? 'true' : 'false', disabled: o[0] === 'uv' && !hasUV, onclick: function () { basis = o[0]; render(); } }, o[1]);
     }));
-    root.appendChild(h('div', { class: 'card' }, h('div', { class: 'card-b row', style: { 'justify-content': 'space-between' } }, pick,
-      h('div', { class: 'row' }, seg, h('button', { class: 'btn sm', onclick: function () { exportX(chosen); } }, UI.icon('download'), 'Excel')))));
-    if (!chosen.length) return;
-    var colorOf = {}; runs.forEach(function (r, i) { colorOf[r.id] = COLORS[i % COLORS.length]; });
-    var met = function (r) { return basis === 'uv' ? r.result.metricsUV : r.result.metrics; };
-    /* metrics table */
-    var head = h('tr', null, h('th', null, 'Metric'), chosen.map(function (r) { return h('th', { class: 'num', title: r.name }, short(r.name)); }));
-    var body = h('tbody');
-    APP.tabs.METRICS.forEach(function (m) {
-      if (!m[1]) { body.appendChild(h('tr', null, h('td', { colspan: chosen.length + 1, class: 'eyebrow', style: { 'padding-top': '12px' } }, m[0]))); return; }
-      var vals = chosen.map(function (r) { var x = met(r); return x ? m[1](x) : null; });
-      if (!vals.some(function (v) { return v > 0.005; }) && !/Monomers|Dimers|Trimers|Degree/.test(m[0])) return;
-      body.appendChild(h('tr', null, h('td', null, m[0]), vals.map(function (v) { return h('td', { class: 'num' }, v === null || v === undefined ? '–' : (m[3] === 'len' ? UI.fx(v, 0) : UI.pct(v, 1))); })));
-    });
-    var keys = ['1', '2', '3', '4+'];
-    var bars = UI.plot.bars({ width: 560, height: 230, cats: ['Mono', 'Di', 'Tri', '≥Tetra'], groups: chosen.map(function (r) {
-      var x = met(r) || { byK: {} }; return { label: short(r.name), color: colorOf[r.id], values: keys.map(function (k) { return x.byK[k] || 0; }) };
-    }), vfmt: function (v) { return v.toFixed(1) + '%'; } });
-    var bars2 = UI.plot.bars({ width: 560, height: 210, cats: ['Cross-linkage', 'Anhydro ends', 'Bridged', 'deAc GlcN'], groups: chosen.map(function (r) {
-      var x = met(r) || {}; return { label: short(r.name), color: colorOf[r.id], values: [x.xlink || 0, x.anhUnits || 0, x.bridged || 0, x.deac || 0] };
-    }), vfmt: function (v) { return v.toFixed(1) + '%'; } });
-    root.appendChild(h('div', { class: 'two', style: { 'margin-top': '16px' } },
-      h('div', { class: 'card' }, h('div', { class: 'card-h' }, h('h3', null, 'Profile metrics (' + (basis === 'uv' ? 'UV' : 'MS') + ')')), h('div', { class: 'tbl-wrap' }, h('table', { class: 'tbl metric-tbl' }, h('thead', null, head), body))),
-      h('div', { class: 'card' }, h('div', { class: 'card-h' }, h('h3', null, 'At a glance')), h('div', { class: 'card-b stack' },
-        h('div', null, h('h4', null, 'Oligomers, % of muropeptides'), bars), h('div', null, h('h4', null, 'Cross-linkage and modifications, %'), bars2)))));
-    /* species matrix */
-    var mat = matrix(chosen);
-    var search = h('input', { class: 'input', type: 'search', placeholder: 'Filter species', value: q, oninput: UI.debounce(function () { q = search.value; fillM(); }, 120) });
-    var tb = h('tbody');
-    var maxV = 0; mat.forEach(function (m) { chosen.forEach(function (r) { var v = m.v[r.id]; if (v > maxV) maxV = v; }); });
-    function fillM() {
-      UI.clear(tb);
-      var t = q.trim().toLowerCase();
-      mat.filter(function (m) { return !t || (m.short + ' ' + m.name + ' ' + m.mass.toFixed(3)).toLowerCase().indexOf(t) >= 0; }).slice(0, 200).forEach(function (m) {
-        tb.appendChild(h('tr', null, h('td', null, h('div', { class: 'nm' }, m.short), h('div', { class: 'pg' }, m.name + (m.nIso > 1 ? '  (' + m.nIso + ' peaks)' : ''))),
-          h('td', { class: 'num' }, UI.fx(m.mass, 4)),
-          chosen.map(function (r) {
-            var v = m.v[r.id];
-            return h('td', { class: 'num', style: v ? { background: 'color-mix(in srgb, var(' + colorOf[r.id] + ') ' + Math.round(8 + 40 * Math.sqrt(v / (maxV || 1))) + '%, transparent)' } : null }, v ? UI.pct(v, 2) : '–');
-          })));
+    root.appendChild(h('div', { class: 'card' },
+      h('div', { class: 'card-h' }, h('h3', null, 'Samples ', h('span', { class: 'muted small' }, nSel + ' of ' + runs.length)),
+        h('div', { class: 'row', style: { gap: '6px' } },
+          h('button', { class: 'btn sm', onclick: function () { setAll(true); } }, 'All'),
+          h('button', { class: 'btn sm', onclick: function () { setAll(false); } }, 'None'),
+          seg,
+          h('button', { class: 'btn sm', onclick: function () { exportX(chosen()); } }, UI.icon('download'), 'Excel'),
+          h('button', { class: 'btn sm', onclick: A.saveSession, title: 'Save all runs of this session in one file' }, UI.icon('download'), 'Save session'))),
+      h('div', { class: 'card-b' }, pick)));
+    if (!nSel) { root.appendChild(h('div', { class: 'card', style: { 'margin-top': '16px' } }, h('div', { class: 'empty' }, 'Tick at least one sample.'))); return; }
+    boxes.table = h('div'); boxes.chart = h('div'); boxes.species = h('div');
+    root.appendChild(h('div', { class: 'stack', style: { 'margin-top': '16px' } }, boxes.table, boxes.chart, boxes.species));
+    renderTable(); renderChart(); renderSpecies();
+  }
+  /* the selected samples, in column order */
+  function chosen() {
+    var list = done().filter(function (r) { return sel[r.id]; });
+    if (st.colSort) {
+      var m = APP.tabs.METRICS[st.colSort.m], d = st.colSort.dir;
+      list.sort(function (a, b) {
+        var x = metVal(m, a), y = metVal(m, b);
+        if (x === null || x === undefined) return 1; if (y === null || y === undefined) return -1;
+        return d * (x - y);
       });
     }
-    fillM();
-    root.appendChild(h('div', { class: 'card', style: { 'margin-top': '16px' } },
-      h('div', { class: 'card-h' }, h('h3', null, 'Species, % of identified ' + (basis === 'uv' ? 'UV' : 'MS') + ' signal'), search),
-      h('div', { class: 'tbl-wrap', style: { 'max-height': '70vh' } }, h('table', { class: 'tbl' },
-        h('thead', null, h('tr', null, h('th', null, 'Species'), h('th', { class: 'num' }, 'Mass'), chosen.map(function (r) { return h('th', { class: 'num', title: r.name }, short(r.name)); }))), tb))));
+    return list;
   }
+  function inChart() { return chosen().filter(function (r) { return !chartOff[r.id]; }); }
   function short(n) { return n.length > 18 ? '…' + n.slice(-16) : n; }
-  function matrix(runs) {
+
+  /* ---------------- metric table ---------------- */
+  function renderTable() {
+    var box = boxes.table; UI.clear(box);
+    var runs = chosen();
+    var head = h('tr', null, h('th', { class: 'stick' }, 'Metric'), runs.map(function (r) {
+      var c = h('input', { type: 'checkbox', checked: !chartOff[r.id], title: 'Show ' + r.name + ' in the charts',
+        onchange: function () { chartOff[r.id] = !c.checked; renderChart(); renderSpeciesChart(); } });
+      return h('th', { class: 'num', title: r.name },
+        h('label', { class: 'colpick' }, c, h('i', { style: { background: colorOf[r.id] } }), short(r.name)));
+    }));
+    var body = h('tbody');
+    APP.tabs.METRICS.forEach(function (m, mi) {
+      if (!m[1]) { body.appendChild(h('tr', { class: 'sect' }, h('td', { class: 'stick eyebrow' }, m[0]), h('td', { colspan: runs.length }))); return; }
+      var vals = runs.map(function (r) { return metVal(m, r); });
+      if (!vals.some(function (v) { return v > 0.005; }) && !/Monomers|Dimers|Trimers|Degree/.test(m[0])) return;
+      var tick = h('input', { type: 'checkbox', checked: !!st.metricSel[mi], title: 'Plot this metric',
+        onchange: function () { st.metricSel[mi] = tick.checked; if (tick.checked) st.view = 'metrics'; renderChart(); } });
+      var sorted = st.colSort && st.colSort.m === mi;
+      var lab = h('button', { class: 'linkish', title: 'Order the samples by this metric (click again to reverse, a third time to undo)',
+        onclick: function () {
+          if (!sorted) st.colSort = { m: mi, dir: -1 }; else if (st.colSort.dir === -1) st.colSort.dir = 1; else st.colSort = null;
+          renderTable(); renderChart(); renderSpecies();
+        } }, m[0], sorted ? (st.colSort.dir < 0 ? ' ▼' : ' ▲') : '');
+      body.appendChild(h('tr', { class: sorted ? 'sel' : '' }, h('td', { class: 'stick' }, h('span', { class: 'mcell' }, tick, lab), m[2] ? h('small', null, m[2]) : null),
+        vals.map(function (v) { return h('td', { class: 'num' }, fmtMetric(m, v)); })));
+    });
+    box.appendChild(h('div', { class: 'card' },
+      h('div', { class: 'card-h' }, h('h3', null, 'Profile metrics (' + (basis === 'uv' ? 'UV' : 'MS') + ')'),
+        h('span', { class: 'small muted' }, 'Click a metric to order the samples by it · tick metrics to plot them · untick a sample to leave it out of the charts')),
+      h('div', { class: 'tbl-wrap freeze', style: { 'max-height': '62vh' } }, h('table', { class: 'tbl metric-tbl' }, h('thead', null, head), body))));
+  }
+
+  /* ---------------- chart of the profile ---------------- */
+  function renderChart() {
+    var box = boxes.chart; if (!box) return; UI.clear(box);
+    var runs = inChart();
+    var ticked = APP.tabs.METRICS.map(function (m, i) { return st.metricSel[i] && m[1] ? i : -1; }).filter(function (i) { return i >= 0; });
+    if (st.view === 'metrics' && !ticked.length) st.view = 'oligo';
+    var views = [['oligo', 'Oligomers, stacked']].concat(OLIGO.map(function (o) { return [o[0], o[1]]; }))
+      .concat([['xlink', 'Cross-linkage'], ['metrics', 'Ticked metrics' + (ticked.length ? ' (' + ticked.length + ')' : '')]]);
+    var vseg = h('div', { class: 'seg' }, views.map(function (v) {
+      return h('button', { 'aria-pressed': st.view === v[0] ? 'true' : 'false', disabled: v[0] === 'metrics' && !ticked.length,
+        title: v[0] === 'metrics' && !ticked.length ? 'Tick metrics in the table first' : '', onclick: function () { st.view = v[0]; renderChart(); } }, v[1]);
+    }));
+    /* the series for this view */
+    var series, unit = '%', vfmt = function (v) { return v.toFixed(1) + '%'; }, stacked = false;
+    function byK(k) { return runs.map(function (r) { var x = met(r); return x ? (x.byK[k] || 0) : null; }); }
+    if (st.view === 'oligo') { stacked = true; series = OLIGO.map(function (o) { return { label: o[1], color: o[2], values: byK(o[0]) }; }); }
+    else if (st.view === 'xlink') {
+      series = [['Degree of cross-linkage', 'xlink', '--accent'], ['by 4-3 links', 'xlink43', '--glc'], ['by 3-3 links', 'xlink33', '--mur']].map(function (q) {
+        return { label: q[0], color: q[2], values: runs.map(function (r) { var x = met(r); return x ? x[q[1]] : null; }) };
+      });
+    } else if (st.view === 'metrics') {
+      series = ticked.map(function (mi, j) { var m = APP.tabs.METRICS[mi]; return { label: m[0], color: seriesColor(j), values: runs.map(function (r) { return metVal(m, r); }) }; });
+      if (ticked.some(function (mi) { return APP.tabs.METRICS[mi][3] === 'len'; })) { unit = ''; vfmt = function (v) { return v.toFixed(1); }; }
+    } else {
+      var o = OLIGO.filter(function (x) { return x[0] === st.view; })[0];
+      series = [{ label: o[1], color: o[2], values: byK(o[0]) }];
+    }
+    /* sample order: as in the table, or by the first series */
+    var idx = runs.map(function (r, i) { return i; });
+    if (st.order === 'value') idx.sort(function (a, b) { return (series[0].values[b] || 0) - (series[0].values[a] || 0); });
+    var names = idx.map(function (i) { return runs[i].name; });
+    series = series.map(function (q) { return { label: q.label, color: q.color, values: idx.map(function (i) { return q.values[i]; }) }; });
+    var oseg = h('div', { class: 'seg' }, [['table', 'Table order'], ['value', 'By value']].map(function (v) {
+      return h('button', { 'aria-pressed': st.order === v[0] ? 'true' : 'false', onclick: function () { st.order = v[0]; renderChart(); } }, v[1]);
+    }));
+    var host = h('div', { class: 'chart-scroll' });
+    function draw() {
+      UI.clear(host);
+      if (!runs.length) { host.appendChild(h('p', { class: 'note', style: { padding: '12px' } }, 'Every sample is unticked for the charts.')); return; }
+      host.appendChild(UI.plot.sampleBars({ samples: names, series: series, stacked: stacked, barW: st.barW, height: 320, unit: unit, vfmt: vfmt,
+        label: 'Profile chart', onPick: function (k) { var r = runs[idx[k]]; A.current = r.id; A.show('analyse'); A.emit('runs'); } }));
+    }
+    var zoom = h('input', { type: 'range', min: 4, max: 40, step: 1, value: st.barW, 'aria-label': 'Bar width',
+      oninput: function () { st.barW = +zoom.value; UI.store.set('cmpBarW', st.barW); draw(); renderSpeciesChart(); } });
+    var legend = h('div', { class: 'legend' }, series.map(function (q) { return h('span', null, h('i', { style: { background: q.color.indexOf('--') === 0 ? 'var(' + q.color + ')' : q.color, height: '10px', width: '10px' } }), q.label); }));
+    box.appendChild(h('div', { class: 'card' },
+      h('div', { class: 'card-h' }, h('h3', null, 'At a glance'), h('div', { class: 'row', style: { gap: '8px' } }, oseg,
+        h('label', { class: 'row small muted', style: { gap: '6px' } }, 'Bar width', zoom))),
+      h('div', { class: 'card-b stack', style: { gap: '10px' } }, vseg, legend, host,
+        h('p', { class: 'note' }, 'One group of bars per sample; the axis fits what is shown, so a small class such as trimers is drawn at full height. Hover a bar for its value; click it to open that run in Analyse.'))));
+    draw();
+  }
+
+  /* ---------------- species ---------------- */
+  function matrix(runs, b) {
     var by = {};
     runs.forEach(function (run) {
       run.result.rows.forEach(function (r) {
-        var m = by[r.fstr] || (by[r.fstr] = { fstr: r.fstr, name: r.name, short: r.short, mass: r.theo, v: {}, nIso: 0, best: 0 });
-        var v = basis === 'uv' ? (r.uvPct || 0) : r.pct;
+        var m = by[r.fstr] || (by[r.fstr] = { fstr: r.fstr, name: r.name, short: r.short, mass: r.theo, k: r.k || 1, v: {}, nIso: 0, best: 0 });
+        var v = (b || basis) === 'uv' ? (r.uvPct || 0) : r.pct;
         m.v[run.id] = (m.v[run.id] || 0) + v;
         if (r.pct > m.best) { m.best = r.pct; m.name = r.name; m.short = r.short; }
       });
       Object.keys(by).forEach(function (k) { var n = run.result.byFstr && run.result.byFstr[k] ? run.result.byFstr[k].length : 0; if (n > by[k].nIso) by[k].nIso = n; });
     });
     var list = Object.keys(by).map(function (k) { return by[k]; });
-    list.forEach(function (m) { var s = 0; runs.forEach(function (r) { s += m.v[r.id] || 0; }); m.mean = s / runs.length; });
-    list.sort(function (a, b) { return b.mean - a.mean; });
+    list.forEach(function (m) {
+      var s = 0, n = 0; runs.forEach(function (r) { var v = m.v[r.id] || 0; s += v; if (v > 0) n++; });
+      m.mean = s / runs.length; m.nIn = n;
+    });
+    list.sort(function (a, b2) { return b2.mean - a.mean; });
     return list;
   }
+  var spList = [], spRuns = [];
+  function renderSpecies() {
+    var box = boxes.species; if (!box) return; UI.clear(box);
+    spRuns = chosen();
+    spList = matrix(spRuns);
+    var maxV = 0; spList.forEach(function (m) { spRuns.forEach(function (r) { var v = m.v[r.id]; if (v > maxV) maxV = v; }); });
+    var search = h('input', { class: 'input', type: 'search', placeholder: 'Filter: name, structure, mass', value: st.q, 'aria-label': 'Filter species',
+      oninput: UI.debounce(function () { st.q = search.value; fill(); }, 140) });
+    var cseg = h('div', { class: 'seg' }, [['all', 'All'], ['1', 'Monomers'], ['2', 'Dimers'], ['3', 'Trimers'], ['4', '≥ Tetramers']].map(function (o) {
+      return h('button', { 'aria-pressed': st.spCls === o[0] ? 'true' : 'false', onclick: function () {
+        st.spCls = o[0]; UI.$$('button', cseg).forEach(function (b) { b.setAttribute('aria-pressed', b === this ? 'true' : 'false'); }, this); fill(); } }, o[1]);
+    }));
+    var minIn = h('input', { class: 'input', type: 'number', min: 0, step: 0.1, value: st.spMin || '', placeholder: '0', style: { width: '70px' }, 'aria-label': 'Smallest mean %',
+      oninput: UI.debounce(function () { st.spMin = +minIn.value || 0; fill(); }, 200) });
+    var count = h('span', { class: 'small muted' });
+    var cols = [{ key: 'short', label: 'Species' }, { key: 'mass', label: 'Mass', num: true }, { key: 'mean', label: 'Mean', num: true }]
+      .concat(spRuns.map(function (r) { return { key: 'run:' + r.id, label: short(r.name), title: r.name, num: true, run: r }; }));
+    var thead = h('tr', null, h('th', { class: 'stick tickcol' }, ''), cols.map(function (c, ci) {
+      var th = h('th', { class: (c.num ? 'num ' : '') + 'sortable' + (ci === 0 ? ' stick2' : ''), title: c.title || 'Sort by ' + c.label,
+        'aria-sort': st.spSort.key === c.key ? (st.spSort.dir > 0 ? 'ascending' : 'descending') : null,
+        onclick: function () {
+          if (st.spSort.key === c.key) st.spSort.dir *= -1; else st.spSort = { key: c.key, dir: c.num ? -1 : 1 };
+          UI.$$('th', thead).forEach(function (t) { t.removeAttribute('aria-sort'); });
+          th.setAttribute('aria-sort', st.spSort.dir > 0 ? 'ascending' : 'descending'); fill();
+        } }, c.run ? [h('i', { class: 'swatch', style: { background: colorOf[c.run.id] } }), c.label] : c.label);
+      return th;
+    }));
+    var tb = h('tbody');
+    function fill() {
+      UI.clear(tb);
+      var t = st.q.trim().toLowerCase(), k = st.spSort.key, d = st.spSort.dir;
+      var list = spList.filter(function (m) {
+        if (st.spCls !== 'all' && (st.spCls === '4' ? m.k < 4 : String(m.k) !== st.spCls)) return false;
+        if (st.spMin && m.mean < st.spMin) return false;
+        return !t || (m.short + ' ' + m.name + ' ' + m.mass.toFixed(3)).toLowerCase().indexOf(t) >= 0;
+      });
+      var get = function (m) { return k.indexOf('run:') === 0 ? (m.v[k.slice(4)] || 0) : m[k]; };
+      list.sort(function (a, b) { var x = get(a), y = get(b); return typeof x === 'string' ? d * x.localeCompare(y) : d * ((x || 0) - (y || 0)); });
+      count.textContent = list.length + ' of ' + spList.length + ' species';
+      list.slice(0, 300).forEach(function (m) {
+        var c = h('input', { type: 'checkbox', checked: !!st.spSel[m.fstr], 'aria-label': 'Plot ' + m.short,
+          onchange: function () { if (c.checked) st.spSel[m.fstr] = true; else delete st.spSel[m.fstr]; renderSpeciesChart(); } });
+        tb.appendChild(h('tr', { class: st.spSel[m.fstr] ? 'sel' : '' },
+          h('td', { class: 'stick tickcol' }, c),
+          h('td', { class: 'stick2' }, h('div', { class: 'nm' }, m.short), h('div', { class: 'pg' }, m.name + (m.nIso > 1 ? '  (' + m.nIso + ' peaks)' : ''))),
+          h('td', { class: 'num' }, UI.fx(m.mass, 4)),
+          h('td', { class: 'num' }, UI.pct(m.mean, 2)),
+          spRuns.map(function (r) {
+            var v = m.v[r.id];
+            return h('td', { class: 'num', style: v ? { background: 'color-mix(in srgb, var(--accent) ' + Math.round(4 + 30 * Math.sqrt(v / (maxV || 1))) + '%, transparent)' } : null }, v ? UI.pct(v, 2) : '–');
+          })));
+      });
+      if (list.length > 300) tb.appendChild(h('tr', null, h('td', { colspan: cols.length + 1, class: 'empty' }, 'The first 300 are shown; narrow the filter to see the rest.')));
+    }
+    fill();
+    boxes.spChart = h('div');
+    box.appendChild(h('div', { class: 'card' },
+      h('div', { class: 'card-h' }, h('h3', null, 'Species, % of identified ' + (basis === 'uv' ? 'UV' : 'MS') + ' signal'),
+        h('span', { class: 'small muted' }, 'Click a heading to sort · tick species to plot them')),
+      h('div', { class: 'filters' }, search, cseg, h('label', { class: 'row small muted', style: { gap: '6px' } }, 'Mean at least', minIn, '%'),
+        h('span', { class: 'spacer' }), count,
+        h('button', { class: 'btn sm', onclick: function () { st.spSel = {}; fill(); renderSpeciesChart(); } }, 'Clear ticks')),
+      h('div', { class: 'tbl-wrap freeze', style: { 'max-height': '62vh' } }, h('table', { class: 'tbl' }, h('thead', null, thead), tb)),
+      boxes.spChart));
+    renderSpeciesChart();
+  }
+  function renderSpeciesChart() {
+    var box = boxes.spChart; if (!box) return; UI.clear(box);
+    var picked = spList.filter(function (m) { return st.spSel[m.fstr]; });
+    if (!picked.length) { box.appendChild(h('p', { class: 'note', style: { padding: '12px 16px' } }, 'Tick species in the table to compare them across the samples as bars.')); return; }
+    var runs = spRuns.filter(function (r) { return !chartOff[r.id]; });
+    var series = picked.map(function (m, j) { return { label: m.short + ' ' + UI.fx(m.mass, 2), color: seriesColor(j), values: runs.map(function (r) { return m.v[r.id] || 0; }) }; });
+    var sseg = h('div', { class: 'seg' }, [[false, 'Side by side'], [true, 'Stacked']].map(function (v) {
+      return h('button', { 'aria-pressed': st.spStack === v[0] ? 'true' : 'false', onclick: function () { st.spStack = v[0]; renderSpeciesChart(); } }, v[1]);
+    }));
+    var host = h('div', { class: 'chart-scroll' });
+    host.appendChild(UI.plot.sampleBars({ samples: runs.map(function (r) { return r.name; }), series: series, stacked: st.spStack, barW: st.barW, height: 300, unit: '%',
+      vfmt: function (v) { return v.toFixed(2) + '%'; }, label: 'Species chart', onPick: function (k) { A.current = runs[k].id; A.show('analyse'); A.emit('runs'); } }));
+    box.appendChild(h('div', { class: 'card-b stack', style: { gap: '10px', 'border-top': '1px solid var(--line-2)' } },
+      h('div', { class: 'row', style: { 'justify-content': 'space-between' } }, h('h4', null, 'Ticked species across the samples'), sseg),
+      h('div', { class: 'legend' }, series.map(function (q) { return h('span', null, h('i', { style: { background: q.color.indexOf('--') === 0 ? 'var(' + q.color + ')' : q.color, height: '10px', width: '10px' } }), q.label); })),
+      host));
+  }
+
   function exportX(runs) {
     if (!runs.length) return;
     var sheets = [];
@@ -15735,8 +16049,7 @@ APP.views.compare = (function () {
     sheets.push({ name: 'Profile metrics', cols: cols, rows: mrows });
     ['ms', 'uv'].forEach(function (b) {
       if (b === 'uv' && !runs.some(function (r) { return r.result.metricsUV; })) return;
-      var keep = basis; basis = b;
-      var mat = matrix(runs); basis = keep;
+      var mat = matrix(runs, b);
       var c = [{ label: 'Species', key: 'short', width: 30 }, { label: 'Structure', key: 'name', width: 46 }, { label: 'Formula', key: 'fstr', width: 18 }, { label: 'Mass', key: 'mass', fmt: '0.0000', width: 12 }];
       runs.forEach(function (r) { c.push({ label: r.name, get: function (m) { return m.v[r.id] || 0; }, fmt: '0.000', width: 16 }); });
       sheets.push({ name: 'Species ' + b.toUpperCase() + ' %', cols: c, rows: mat });
@@ -15970,7 +16283,7 @@ APP.views.structure = (function () {
 APP.views.library = (function () {
   'use strict';
   var h = UI.h, A = APP, L = SAC.library, C = SAC.chem;
-  var root, side, detail, cur = 'gramneg', q = '', reducedView = true, shown = 300, mode = 'view', note = null;
+  var root, side, detail, cur = 'gramneg', q = '', reducedView = true, shown = 300, mode = 'view', note = null, entSort = { key: 'mass', dir: 1 };
 
   function mount(el) {
     root = el;
@@ -16120,6 +16433,8 @@ APP.views.library = (function () {
       UI.clear(tb); UI.clear(more);
       var t = q.trim().toLowerCase();
       var f = list.filter(function (x) { return !t || (x.e.text + ' ' + x.e.short + ' ' + x.mass.toFixed(4) + ' ' + x.e.kind).toLowerCase().indexOf(t) >= 0; });
+      var gv = function (x) { return entSort.key === 'mass' ? x.mass : entSort.key === 'kind' ? x.e.kind : entSort.key === 'formula' ? x.e.fstr : x.e.short; };
+      f.sort(function (a, b) { var p = gv(a), r = gv(b); return typeof p === 'string' ? entSort.dir * p.localeCompare(r) : entSort.dir * (p - r); });
       count.textContent = f.length + ' of ' + list.length;
       f.slice(0, shown).forEach(function (x) {
         tb.appendChild(h('tr', { onclick: function () { APP.views.structure.load(x.e.text, reducedView); } },
@@ -16129,6 +16444,14 @@ APP.views.library = (function () {
       });
       if (f.length > shown) more.appendChild(h('button', { class: 'btn sm', onclick: function () { shown += 600; fill(); } }, 'Show more (' + (f.length - shown) + ' left)'));
     }
+    var ehead = h('tr', null, [['short', 'Structure'], ['kind', 'Kind'], ['formula', 'Formula'], ['mass', 'Monoisotopic mass', true]].map(function (c) {
+      var th = h('th', { class: (c[2] ? 'num ' : '') + 'sortable', 'aria-sort': entSort.key === c[0] ? (entSort.dir > 0 ? 'ascending' : 'descending') : null,
+        onclick: function () {
+          if (entSort.key === c[0]) entSort.dir *= -1; else entSort = { key: c[0], dir: 1 };
+          UI.$$('th', ehead).forEach(function (t) { t.removeAttribute('aria-sort'); }); th.setAttribute('aria-sort', entSort.dir > 0 ? 'ascending' : 'descending'); fill();
+        } }, c[1]);
+      return th;
+    }));
     fill();
     return h('div', { class: 'card' }, h('div', { class: 'card-h' }, h('h3', null, 'Monomers and dimers'),
         h('div', { class: 'row' }, search, seg, count,
@@ -16136,7 +16459,7 @@ APP.views.library = (function () {
           h('button', { class: 'btn sm', onclick: function () { exportFull(p, sp); } }, UI.icon('download'), 'Full list (CSV)'))),
       h('p', { class: 'note', style: { padding: '10px 16px 0' } }, 'Click a structure to open it in Structure.'),
       h('div', { class: 'tbl-wrap', style: { 'max-height': '60vh' } }, h('table', { class: 'tbl click' },
-        h('thead', null, h('tr', null, h('th', null, 'Structure'), h('th', null, 'Kind'), h('th', null, 'Formula'), h('th', { class: 'num' }, 'Monoisotopic mass'))), tb)), more);
+        h('thead', null, ehead), tb)), more);
   }
   function exportPG(p, sp) {
     var rows = sp.entries.map(function (e) {
@@ -16570,14 +16893,14 @@ APP.views.home = (function () {
 
   function mount(el) {
     root = el;
-    var fileIn = h('input', { type: 'file', accept: '.mzML,.mzml,.json', multiple: true, hidden: true, onchange: function () { A.addFiles(fileIn.files); fileIn.value = ''; } });
-    var openIn = h('input', { type: 'file', accept: '.json,application/json', hidden: true, onchange: function () { Array.prototype.forEach.call(openIn.files, A.openAnalysis); openIn.value = ''; } });
+    var fileIn = h('input', { type: 'file', accept: '.mzML,.mzml,.json,.gz', multiple: true, hidden: true, onchange: function () { A.addFiles(fileIn.files); fileIn.value = ''; } });
+    var openIn = h('input', { type: 'file', accept: '.json,.gz,application/json,application/gzip', multiple: true, hidden: true, onchange: function () { Array.prototype.forEach.call(openIn.files, A.openAnalysis); openIn.value = ''; } });
     var drop = h('div', { class: 'drop' },
       h('h3', null, 'Analyse mzML files'),
       h('p', { class: 'muted', style: { 'max-width': '46ch' } }, 'Drop centroided mzML here, or choose them. Several files queue up and are analysed one after another, inside this page.'),
       h('div', { class: 'home-actions' },
         h('button', { class: 'btn primary', onclick: function () { fileIn.click(); } }, UI.icon('upload'), 'Choose mzML files'),
-        h('button', { class: 'btn', onclick: function () { openIn.click(); } }, UI.icon('open'), 'Open a saved analysis'),
+        h('button', { class: 'btn', onclick: function () { openIn.click(); } }, UI.icon('open'), 'Open a saved analysis or session'),
         h('button', { class: 'btn ghost', onclick: A.loadExample }, 'Open the example')), fileIn, openIn);
     ['dragenter', 'dragover'].forEach(function (t) { drop.addEventListener(t, function (e) { e.preventDefault(); drop.classList.add('over'); }); });
     ['dragleave', 'drop'].forEach(function (t) { drop.addEventListener(t, function () { drop.classList.remove('over'); }); });
@@ -16615,7 +16938,9 @@ APP.views.home = (function () {
     UI.clear(sessionBox);
     if (!A.runs.length) return;
     sessionBox.appendChild(h('div', { class: 'row', style: { 'justify-content': 'space-between' } },
-      h('h2', null, 'Open in this session'), h('button', { class: 'btn sm', onclick: function () { A.show('analyse'); } }, 'Go to Analyse')));
+      h('h2', null, 'Open in this session'), h('div', { class: 'row', style: { gap: '6px' } },
+        h('button', { class: 'btn sm', onclick: A.saveSession }, UI.icon('download'), 'Save session'),
+        h('button', { class: 'btn sm', onclick: function () { A.show('analyse'); } }, 'Go to Analyse'))));
     sessionBox.appendChild(h('div', { class: 'session-list' }, A.runs.map(function (run) {
       var meta;
       if (run.status === 'done' && run.result) meta = run.result.rows.length + ' species · ' + UI.pct(run.result.muroLikePct === null ? run.result.assignedPct : run.result.muroLikePct, 0) + '% of muropeptide signal explained';
