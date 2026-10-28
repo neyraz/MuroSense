@@ -5777,10 +5777,11 @@ SAC.pipeline = (function () {
 
     /* 9. identified rows and their MS/MS evidence */
     var reduced = mode !== 'none';
-    var rows = [];
+    var rows = [], groupOf = {};
     R.rows.forEach(function (r) {
       if (r.q > st.fdr) return;
       var row = makeRow(r, sp1, mode);
+      groupOf[row.fid] = r.hits[0].g;
       if (r.focused) row.focused = true;
       var refs = refByF[row.fstr];
       if (refs) row.ref = refs.slice(0, 3).map(function (x) { return { id: x.id, name: x.name, aliases: x.aliases, status: x.status }; });
@@ -5798,7 +5799,12 @@ SAC.pipeline = (function () {
           row.isomerCall = ev.call;
           var w = row.isomers.findIndex(function (m) { return m.text === ev.call.winner; });
           if (w > 0) { var x = row.isomers.splice(w, 1)[0]; row.isomers.unshift(x); }
-          if (ev.call.kind === 'call') { row.name = row.isomers[0].text; row.short = row.isomers[0].short; row.byMsms = true; }
+          if (ev.call.kind === 'call') {
+            var g = groupOf[row.fid], mem = g && g.members.filter(function (m) { return m.text === ev.call.winner; })[0];
+            if (mem) adoptIsomer(row, mem, sp1);
+            else { row.name = row.isomers[0].text; row.short = row.isomers[0].short; }
+            row.byMsms = true;
+          }
         } else if (ev && ev.call) row.isomerCall = ev.call;
       });
     }
@@ -6002,7 +6008,7 @@ SAC.pipeline = (function () {
       space: { units: sp1.units.length, stage1: G1.length, groups: G.length, oligomers: nOlig },
       stats: Object.assign({}, det.stats, { merged: nMerged }), totalArea: totalArea, idArea: idArea, assignedPct: idArea / (totalArea || 1) * 100,
       muroLikeArea: muroLike, muroLikePct: muroLike ? idMuroLike / muroLike * 100 : null,
-      metrics: metrics, metricsUV: metricsUV,
+      metrics: metrics, metricsUV: metricsUV, metricsRev: 2,
       fit: fitVerdict(),
       uv: uvRes ? uvSummary(uvRes) : null,
       traces: SAC.evidence.traces(run, det, uvRes),
@@ -6025,7 +6031,6 @@ SAC.pipeline = (function () {
       return { text: m.text, short: m.short, prior: m.prior, red: m.red, nRed: m.nRed, links: m.links, linkSure: m.linkSure };
     });
     F.idRow = true;
-    var units = best.units.length ? best.units.map(function (ui) { return sp.units[ui]; }) : (best.uinfo || []);
     return {
       fid: F.id, name: best.text, short: best.short, fstr: g.fstr, theo: g.mass, mass: F.mass, massRaw: F.massRaw,
       ppm: h.ppm, score: r.score, q: r.q, ll: h.ll, iso: h.iso, rt: F.rt, rtL: F.rtL, rtR: F.rtR, fwhm: F.fwhm,
@@ -6033,12 +6038,27 @@ SAC.pipeline = (function () {
       zSpread: F.zSpreadPpm, saturated: F.envs.filter(function (e) { return e.sat || e.satRisk; }).map(function (e) { return e.z; }),
       gen: F.gen ? { oxo: !!F.gen.oxo, y: !!F.gen.y, oxoR: F.gen.oxo ? F.gen.oxo.r : null, yR: F.gen.y ? F.gen.y.r : null } : null,
       satellites: (F.satellites || []).map(function (s) { return { rel: s.relation, mass: s.mass, area: s.area }; }),
-      k: best.k, kind: best.kind, cls: best.cls, nAnh: best.nAnh, nStem: best.nStem, links: best.links || [], linkSure: best.linkSure,
+      k: best.k, kind: best.kind, cls: best.cls, nAnh: best.nAnh, nStem: best.nStem, links: best.links || [],
+      linkSure: best.linkSure,
       nIsomers: g.members.length, isomers: iso, alts: alts,
       redState: { r: best.red === undefined ? best.nRed : best.red, n: best.nRed, mode: mode },
       composition: compositionKey(g, best),
-      unitInfo: units.map(function (u) { return { len: u.len, bridge: u.bridge, anh: u.anh, deac: u.deac, oac: u.oac, amid: u.amid, stem: u.stem, glycan: u.glycan, mods: u.mods, lpp: u.lpp || '' }; })
+      unitInfo: unitInfoOf(best, sp)
     };
+  }
+  function unitInfoOf(m, sp) {
+    var units = m.units.length ? m.units.map(function (ui) { return sp.units[ui]; }) : (m.uinfo || []);
+    return units.map(function (u) { return { len: u.len, bridge: u.bridge, anh: u.anh, deac: u.deac, oac: u.oac, amid: u.amid, stem: u.stem, glycan: u.glycan, mods: u.mods, lpp: u.lpp || '' }; });
+  }
+  /* MS/MS has settled which isomer this is: the row takes on that structure's
+     class, links and units too, not only its name -- a glycan-chain dimer
+     (~) called over a 3-3 cross-linked one is no cross-link at all */
+  function adoptIsomer(row, m, sp) {
+    row.name = m.text; row.short = m.short;
+    row.k = m.k; row.kind = m.kind; row.cls = m.cls; row.nAnh = m.nAnh; row.nStem = m.nStem;
+    row.links = m.links || []; row.linkSure = !!m.linkSure;
+    row.redState = { r: m.red === undefined ? m.nRed : m.red, n: m.nRed, mode: row.redState.mode };
+    row.unitInfo = unitInfoOf(m, sp);
   }
   function compositionKey(g, best) { return g.fstr; }
 
@@ -21283,8 +21303,34 @@ var APP = (function () {
   function settingsChanged(run) {
     if (!run || !run.settings) return false;
     var a = engineSettings(run.settings), b = engineSettings(A.settings);
-    return JSON.stringify(a) !== JSON.stringify(b);
+    return JSON.stringify(a) !== JSON.stringify(b) || libraryEdits(run).length > 0;
   }
+  /* A run names its library by id, so editing the library afterwards (a
+     larger oligomer, another link type) leaves the run's settings looking
+     unchanged. The result keeps the library exactly as it was searched; the
+     differences from the library as it stands now are listed here. */
+  var LIB_LABELS = { glycans: 'glycans', stem: 'stem residues', stemLen: 'stem lengths', bridges: 'bridges', bridgeAt: 'bridge position',
+    bridgeOptional: 'optional bridge', directLinks: 'direct links', links: 'link types', maxOligomer: 'largest oligomer', lpp: 'Lpp remnants',
+    chains: 'glycan chains', chainMax: 'longest glycan chain', chainShort: 'short chains', extras: 'listed structures', refs: 'reference set',
+    maxMods: 'modifications per molecule', prec: 'precursors', oligoFrom: 'oligomer units', exclude: 'excluded structures', custom: 'custom blocks', type: 'library type' };
+  function canon(v) {
+    if (Array.isArray(v)) return '[' + v.map(canon).join(',') + ']';
+    if (v && typeof v === 'object') return '{' + Object.keys(v).sort().map(function (k) { return k + ':' + canon(v[k]); }).join(',') + '}';
+    return JSON.stringify(v === undefined ? null : v);
+  }
+  function libraryEdits(run) {
+    var lib = run && run.settings && libFromValue(run.settings.profile);
+    var used = run && run.result && run.result.settings && run.result.settings.customProfile;
+    if (!lib || !used) return [];
+    var now = libraryProfile(lib), out = [];
+    Object.keys(LIB_LABELS).forEach(function (k) {
+      if (used[k] === undefined || canon(used[k]) === canon(now[k])) return;
+      var scalar = function (v) { return v === null || typeof v !== 'object'; };
+      out.push(LIB_LABELS[k] + (scalar(used[k]) && scalar(now[k]) ? ' ' + used[k] + ' → ' + now[k] : ''));
+    });
+    return out;
+  }
+  A.libraryEdits = libraryEdits;
 
   /* derived look-ups the views share */
   function prepare(res) {
@@ -21292,8 +21338,19 @@ var APP = (function () {
     res.rows.forEach(function (r, i) { r.idx = i; });
     /* results saved before the metrics knew every link type (1-3 and others)
        get them recomputed from their own species */
-    if (res.metrics && res.metrics.xlink13 === undefined && SAC.metrics) {
+    if (res.metrics && (res.metrics.xlink13 === undefined || !res.metricsRev) && SAC.metrics) {
       try {
+        /* and results saved before an MS/MS isomer call carried the called
+           structure's class and links (a glycan-chain dimer was counted as a
+           3-3 cross-link) are brought up to date first */
+        res.rows.forEach(function (r) {
+          var iso = r.isomers || [];
+          if (r.byMsms && iso[0] && iso[0].text === r.name) {
+            r.links = iso[0].links || []; r.linkSure = !!iso[0].linkSure;
+            if (r.k > 1 && /~/.test(r.name) && !/=/.test(r.name) && !/UDP|PPL/.test(r.name)) { r.cls = 'chain'; r.kind = 'chain'; }
+          }
+        });
+        res.metricsRev = 2;
         res.metrics = SAC.metrics.compute(res.rows, { source: 'ms' }) || res.metrics;
         if (res.metricsUV) res.metricsUV = SAC.metrics.compute(res.rows, { source: 'uv' }) || res.metricsUV;
       } catch (e) { /* keep what was saved */ }
@@ -21756,7 +21813,10 @@ APP.views.analyse = (function () {
     UI.clear(foot);
     var run = A.currentRun(), can = !!(run && run.file && run.status !== 'reading' && run.status !== 'analysing');
     var changed = can && run.status === 'done' && A.settingsChanged(run);
-    if (changed) foot.appendChild(h('div', { class: 'changed' }, 'Settings differ from the ones this run was analysed with.'));
+    var edits = run && run.result ? A.libraryEdits(run) : [];
+    if (edits.length) foot.appendChild(h('div', { class: 'changed' }, 'The library this run was searched with has been edited since (' + edits.join('; ') + '). ' +
+      (run.file ? 'Re-analyse to apply the edits.' : 'The results shown are from the library as it was then; add the mzML again to re-analyse.')));
+    else if (changed) foot.appendChild(h('div', { class: 'changed' }, 'Settings differ from the ones this run was analysed with.'));
     foot.appendChild(h('button', { class: 'btn' + (changed ? ' primary' : ''), disabled: !can, onclick: function () { A.reanalyse(run); },
       title: can ? 'Analyse ' + run.name + ' again with the settings above' : (run && !run.file ? 'Add this run’s mzML again to re-analyse it' : 'Open a run first') },
       UI.icon('reanalyse'), 'Re-analyse with these settings'));
@@ -25522,7 +25582,7 @@ APP.views.guide = (function () {
         [h('b', null, 'Find a species in the chromatogram. '), 'Hover a row of the Species table and its peak is shaded and labelled in the chromatogram, or pointed to from the edge when it lies outside the view. Hover a tick in the chromatogram and its row lights up. Click either for the evidence.'],
         [h('b', null, 'Zoom. '), 'Turn the mouse wheel over the chromatogram to zoom in and out about the pointer (Shift+wheel, or a sideways swipe, moves along the run); drag across it to zoom to a stretch; double-click to see the whole run. One button switches between ', h('i', null, 'Whole run'), ' and ', h('i', null, 'Identified region'), ', naming the view it goes to.'],
         [h('b', null, 'Save the chromatogram. '), h('i', null, 'SVG'), ' saves the view as shown as a vector figure (editable in Illustrator or Inkscape), ', h('i', null, 'PNG'), ' as a picture at three times the size; both on a light background with the run’s name and a legend of the traces shown.'],
-        [h('b', null, 'Re-analyse. '), 'Changing a search setting applies to new runs. The bottom of the runs panel says when the open run was analysed with different settings, and ', h('i', null, 'Re-analyse with these settings'), ' runs it again. A run reopened from a saved analysis has no mzML attached: add the file again to re-analyse it.'],
+        [h('b', null, 'Re-analyse. '), 'Changing a search setting applies to new runs. The bottom of the runs panel says when the open run was analysed with different settings, or when its library has been edited since (each run keeps the library exactly as it was searched, and the notice names what changed), and ', h('i', null, 'Re-analyse with these settings'), ' runs it again. A run reopened from a saved analysis has no mzML attached: add the file again to re-analyse it.'],
         [h('b', null, 'Theme. '), 'The switch in the header picks light, dark, or whatever the system uses.'],
         [h('b', null, 'Keyboard. '), 'Tab reaches every table row that opens something and every sortable column heading; Enter or Space opens the row or sorts by the column. Escape closes the evidence panel, and ↑ and ↓ step through the species while it is open.']])]));
 
@@ -25565,7 +25625,7 @@ APP.views.guide = (function () {
       li([
         [h('b', null, 'Is the composition right? '), 'That is what the FDR controls. A decoy space shifted by ±7 or ±13 Da contains nothing a muropeptide can be, so every decoy win is an error the scoring let through; their rate above a score threshold estimates the rate among targets. At 1% FDR, about one row in a hundred is expected to be wrong.'],
         [h('b', null, 'Is it a muropeptide at all? '), 'The signature dots answer that independently of the search: GlcNAc oxonium (204.087) and the loss of GlcNAc are produced by almost every muropeptide and by few other molecules.'],
-        [h('b', null, 'Which arrangement is it? '), 'Mass cannot tell 4-3 from 3-3 links, or which unit carries a bridge. Only fragments unique to one arrangement can. “MS/MS resolves isomer” means several such fragments were found and the alternatives’ were not; otherwise all arrangements remain possible and the drawer lists them.']]),
+        [h('b', null, 'Which arrangement is it? '), 'Mass cannot tell 4-3 from 3-3 links, or which unit carries a bridge. Only fragments unique to one arrangement can. “MS/MS resolves isomer” means several such fragments were found and the alternatives’ were not; the species then takes on that arrangement everywhere, profile metrics included (a glycan-chain dimer, ~, called over a cross-linked one is counted as no cross-link). Otherwise all arrangements remain possible and the drawer lists them.']]),
       p('An MS/MS count like 18/154 with p = 10⁻¹⁵ means 18 of 154 predicted fragments co-elute with the precursor, where chance alone would explain one or two. Large oligomers fragment less, so a low count there is not evidence against them.')]));
 
     body.appendChild(sec('quant', 'MS and UV abundances', [
