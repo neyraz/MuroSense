@@ -385,6 +385,16 @@ table.tbl { border-collapse: collapse; width: 100%; font-size: 13px; }
   max-width: calc(100vw - 32px); pointer-events: none;
 }
 .toast.on { opacity: 1; transform: translateX(-50%); }
+.choice-back { position: fixed; inset: 0; background: rgba(0,0,0,.35); z-index: 70; display: flex; align-items: center; justify-content: center; padding: 16px; }
+.choice { background: var(--panel); color: var(--ink); border: 1px solid var(--line); border-radius: var(--r); box-shadow: 0 12px 40px rgba(0,0,0,.25);
+  width: min(440px, 100%); padding: 18px 18px 14px; display: grid; gap: 10px; }
+.choice h3 { margin: 0; font-size: 15px; }
+.choice p { margin: 0; font-size: 13px; color: var(--ink-2); }
+.choice .row { justify-content: flex-end; flex-wrap: wrap; gap: 8px; }
+.batch { display: grid; gap: 4px; font-size: 12px; color: var(--ink-2); }
+.batch .bar { margin-top: 0; height: 6px; }
+.batch b { color: var(--ink); font-weight: 600; }
+.batch .muted { color: var(--muted); }
 .progress-card { display: grid; gap: 12px; padding: 24px; }
 .progress-card .bar { height: 6px; }
 .steps { display: grid; gap: 4px; font-size: 12.5px; color: var(--muted); }
@@ -2316,11 +2326,11 @@ SAC.features = (function () {
   }
 
   /* ---------- 2. chromatographic peaks within traces ---------- */
-  function findPeaks(set, T, opt, noise) {
+  function findPeaks(set, T, opt, noise, tFrom) {
     var rt = set.rt, mzA = set.mz, itA = set.int;
     var peaks = [];
     var y = new Float64Array(64), ys = new Float64Array(64), ym = new Float64Array(64);
-    for (var t = 0; t < T.n; t++) {
+    for (var t = tFrom || 0; t < T.n; t++) {
       var L = T.len[t], off = T.off[t], s0 = T.s0[t];
       if (y.length < L + 4) { y = new Float64Array(L * 2 + 8); ys = new Float64Array(L * 2 + 8); ym = new Float64Array(L * 2 + 8); }
       var i, k;
@@ -2714,8 +2724,15 @@ SAC.features = (function () {
     { d: 46.005479, why: 'formate adduct [M+HCOO]⁻', kind: 'adduct' },
     { d: 35.976678, why: 'chloride adduct [M+Cl]⁻', kind: 'adduct' }
   ];
+  /* nucleotide precursors lose UDP or UMP in the source: UDP-MurNAc-
+     pentapeptide then shows an ion at the mass of anhydro-MurNAc-pentapeptide */
+  var POOL_RELS = [
+    { d: -404.002589, why: 'in-source loss of UDP', kind: 'loss', minCorr: 0.5 },
+    { d: -324.035867, why: 'in-source loss of UMP', kind: 'loss', minCorr: 0.5 }
+  ];
   function satellites(set, T, feats, opt) {
     var rels = opt && opt.polarity === 'negative' ? RELS.filter(function (r) { return !/NH₄/.test(r.why); }).concat(NEG_RELS) : RELS;
+    if (opt && opt.pool) rels = rels.concat(POOL_RELS);
     var order = feats.slice().sort(function (a, b) { return b.area - a.area; });
     var byMass = feats.slice().sort(function (a, b) { return a.mass - b.mass; });
     var masses = new Float64Array(byMass.length);
@@ -2734,7 +2751,7 @@ SAC.features = (function () {
           var c = profileCorr(set, T, F.envs[0].peaks[0], G.envs[0].peaks[0]);
           /* a cluster forms in proportion to the square of the concentration,
              so its peak is narrower than its parent's and correlates less */
-          if (c < (rel.kind === 'cluster' ? 0.6 : 0.75)) continue;
+          if (c < (rel.minCorr || (rel.kind === 'cluster' ? 0.6 : 0.75))) continue;
           G.parent = F; G.relation = rel.why; G.relKind = rel.kind; G.relCorr = c; G.relDelta = rel.d;
           F.satellites.push(G); n++;
         }
@@ -2788,9 +2805,110 @@ SAC.features = (function () {
     return n;
   }
   /* recompute adduct / in-source satellite links from scratch */
-  function relink(set, T, feats) {
+  function relink(set, T, feats, opt) {
     feats.forEach(function (F) { F.parent = null; F.satellites = []; F.relation = null; });
-    return satellites(set, T, feats);
+    return satellites(set, T, feats, opt);
+  }
+
+  /* ---------- targeted extraction ----------
+     For a short list of expected molecules (a cytoplasmic pool) the untargeted
+     path can miss what matters: a weak ion never seeds a trace, or never
+     finds its isotope partner among the traces. Here each expected ion is
+     extracted directly -- per scan the strongest centroid within tolPpm of
+     its expected raw m/z -- as a trace of its own, appended to the run's
+     traces so everything downstream (profiles, evidence, UV) reads it like
+     any other; peaks are found on it with relaxed thresholds. A protonated
+     ion becomes a feature only with its M+1 partner co-eluting; adduct ions
+     become single-ion features that the satellite links attach to their
+     parent. Ions already part of a feature are left alone.
+     targets: [{ mz, z, kind: 'mono' | 'iso' | 'adduct', mono: index of the
+     mono target (for 'iso'), tag }] */
+  function rescue(det, feats, targets, o) {
+    var set = det.set, T = det.T, noise = det.noise, rt = set.rt, start = set.start, mzA = set.mz, itA = set.int;
+    var tol = (o.tolPpm || 10) * 1e-6;
+    var sA = 0, sB = set.n - 1;
+    while (sA < set.n && rt[sA] < (o.rt0 === undefined || o.rt0 === null ? -Infinity : o.rt0)) sA++;
+    while (sB >= 0 && rt[sB] > (o.rt1 === undefined || o.rt1 === null ? Infinity : o.rt1)) sB--;
+    var add = [];
+    targets.forEach(function (tg, ti) {
+      var c = tg.mz, w = c * tol, first = -1, last = -1, ks = new Int32Array(Math.max(0, sB - sA + 1)).fill(-1), n = 0;
+      for (var s = sA; s <= sB; s++) {
+        var a = U.lowerBound(mzA, c - w, start[s], start[s + 1]), best = -1, bi = 0;
+        for (; a < start[s + 1] && mzA[a] <= c + w; a++) if (itA[a] > bi) { bi = itA[a]; best = a; }
+        if (best >= 0) { ks[s - sA] = best; n++; if (first < 0) first = s; last = s; }
+      }
+      if (n >= 3) add.push({ ti: ti, s0: first, ks: ks.subarray(first - sA, last - sA + 1), mz: c });
+    });
+    if (!add.length) return [];
+    /* append the new traces */
+    var n0 = T.n, nN = n0 + add.length, nPts = T.pts.length;
+    add.forEach(function (x) { nPts += x.ks.length; });
+    var off = new Int32Array(nN), s0a = new Int32Array(nN), len = new Int32Array(nN), tmz = new Float64Array(nN), tmax = new Float64Array(nN), pts = new Int32Array(nPts);
+    off.set(T.off); s0a.set(T.s0); len.set(T.len); tmz.set(T.mz); tmax.set(T.max); pts.set(T.pts);
+    var p0 = T.pts.length;
+    add.forEach(function (x, i) {
+      var t = n0 + i, top = 0;
+      off[t] = p0; s0a[t] = x.s0; len[t] = x.ks.length; tmz[t] = x.mz;
+      for (var j = 0; j < x.ks.length; j++) { pts[p0 + j] = x.ks[j]; if (x.ks[j] >= 0 && itA[x.ks[j]] > top) top = itA[x.ks[j]]; }
+      tmax[t] = top; p0 += x.ks.length;
+    });
+    var T2 = { n: nN, off: off, s0: s0a, len: len, mz: tmz, max: tmax, pts: pts, scanOf: T.scanOf, nSeeds: T.nSeeds };
+    det.T = T2;
+    var relaxed = Object.assign({}, det.opt || defaults({}), { minPoints: 3, seedSN: 3, minHalf: 2 });
+    var pk = findPeaks(set, T2, relaxed, noise, n0), byT = {};
+    pk.forEach(function (p) { var ti = add[p.t - n0].ti; (byT[ti] = byT[ti] || []).push(p); });
+    /* ions that are already part of a feature */
+    var have = [];
+    feats.forEach(function (F) { F.envs.forEach(function (e) { e.iso.forEach(function (q) { have.push({ mz: q.mz, s0: q.s0, s1: q.s1, F: F, lone: !!F.lone }); }); }); });
+    have.sort(function (a, b) { return a.mz - b.mz; });
+    var hm = Float64Array.from(have.map(function (q) { return q.mz; }));
+    /* the feature an ion already belongs to: one with isotopes is left alone;
+       a lone one (no isotope partner found) may be replaced by a better one */
+    function covered(p) {
+      var w2 = p.mz * tol, a = U.lowerBound(hm, p.mz - w2), lone = null;
+      for (; a < hm.length && hm[a] <= p.mz + w2; a++) if (have[a].s0 <= p.sApex && have[a].s1 >= p.sApex) { if (!have[a].lone) return { full: true }; lone = have[a].F; }
+      return lone ? { full: false, F: lone } : null;
+    }
+    var dt = rt[1] - rt[0] || 0.01, out = [];
+    targets.forEach(function (tg, ti) {
+      if (tg.kind === 'iso') return;
+      (byT[ti] || []).forEach(function (p) {
+        var cov = covered(p);
+        if (cov && (cov.full || tg.kind === 'adduct')) return;
+        if (tg.kind === 'adduct') {
+          if (p.sn < 5) return;
+          var Fa = makeFeature(set, [makeEnv(set, [p], tg.z, 0, true)]);
+          Fa.rescued = tg.tag; Fa.rescuedIon = tg.ion; out.push(Fa);
+          return;
+        }
+        /* the M+1 partner on its own extracted trace */
+        var iso = null, bc = 0;
+        targets.forEach(function (t2, tj) {
+          if (t2.kind !== 'iso' || t2.mono !== ti) return;
+          (byT[tj] || []).forEach(function (q) {
+            var lim = Math.max(0.35 * Math.max(p.fwhm, q.fwhm), 2.2 * dt);
+            if (Math.abs(q.rt - p.rt) > lim || q.height > 3 * p.height || q.height < 0.03 * p.height) return;
+            var c = profileCorr(set, T2, p, q);
+            if (c >= 0.6 && c > bc) { bc = c; iso = q; }
+          });
+        });
+        var F;
+        if (iso) {
+          var fit = chooseMono([p, iso], 0, tg.z, relaxed.seedSN * noise[p.sApex]);
+          F = makeFeature(set, [makeEnv(set, [p, iso], tg.z, fit ? fit.fit : 0, false)]);
+        } else {
+          /* no M+1: acceptable only where the M+1 expected would sit below the
+             noise, so its absence says nothing (small molecules, weak peaks) */
+          var E = C.avgPattern((p.mz - PROTON) * tg.z, 2);
+          if (!E[1] || p.height * E[1].rel >= 5 * noise[p.sApex] || p.sn < 4 || p.nPts < 4) return;
+          F = makeFeature(set, [makeEnv(set, [p], tg.z, 0, false)]);
+          F.monoOnly = true;
+        }
+        F.rescued = tg.tag; F.rescuedIon = tg.ion; out.push(F);
+        if (cov && cov.F) cov.F.mergedInto = F;
+      });
+    });
+    return out;
   }
 
   /* ---------- driver ---------- */
@@ -2810,7 +2928,7 @@ SAC.features = (function () {
   }
 
   return { detect: detect, profile: profile, profileCorr: profileCorr, valueAt: valueAt, scanNoise: scanNoise, ISO_D: ISO_D, RELS: RELS,
-           mergeCharges: mergeCharges, relink: relink, trusted: trusted, massUnsure: massUnsure, massEnvs: massEnvs };
+           mergeCharges: mergeCharges, relink: relink, trusted: trusted, massUnsure: massUnsure, massEnvs: massEnvs, rescue: rescue };
 })();
 
 /* ---- e05_library.js ---- */
@@ -2846,8 +2964,19 @@ SAC.library = (function () {
     gramneg: {
       name: 'Gram-negative, mDAP (E. coli-type)', short: 'Gram-negative (mDAP)',
       examples: 'E. coli, Salmonella, Caulobacter, Agrobacterium, Bradyrhizobium',
-      glycans: ['gm', 'gm(Anh)'], stem: GN_STEM, stemLen: [0, 5], bridges: [], directLinks: true,
-      links: ['4-3', '3-3'], maxOligomer: 4, lpp: ['KR'], chains: true,
+      /* besides the usual units: de-N-acetylated GlcNAc, and partners that lost
+         their disaccharide (bare stems, and stems keeping the lactyl), which
+         E. coli sacculi carry at low levels (Patel et al. 2021, PGFinder);
+         Lpp remnants Lys-Arg and Lys, as acceptors in oligomers too */
+      glycans: ['gm', 'gm(Anh)', 'g(-Ac)m', '', 'lac'], stem: GN_STEM, stemLen: [0, 5], bridges: [], directLinks: true,
+      links: ['4-3', '3-3'], maxOligomer: 4, lpp: ['KR', 'K'], chains: true,
+      /* the automatic choice compares chemistries on what defines them; these
+         minor variants are not a chemistry of their own, and their many
+         combinations would only add chance (decoy) matches to the comparison */
+      choose: { glycans: ['gm', 'gm(Anh)'] },
+      /* the default: another chemistry is chosen over it only when it
+         credibly explains signal this one cannot */
+      generic: true,
       extras: ['lac-AEJ', 'lac-AEJA', 'AEJ', 'AEJA', 'm(Anh)-AEJ', 'm(Anh)-AEJA', 'm(Anh)-AEJAA']
     },
     /* mod X (+100.016, C4H4O3) sits on GlcNAc: X-species give a 304.10
@@ -3006,8 +3135,31 @@ SAC.library = (function () {
       examples: 'Lactiplantibacillus plantarum',
       glycans: ['gm', 'gm(Anh)', 'gm(Ac)', 'g(Ac)m'], stem: [['A'], ['Q', 'E'], ['J(Am)', 'J'], ['A'], ['A', 'Lac']], stemLen: [1, 5],
       bridges: [], directLinks: true, links: ['4-3'], maxOligomer: 3, lpp: [], chains: false, extras: []
+    },
+    /* Cytoplasmic pools: for a soluble (cytoplasmic) extract rather than
+       sacculi. Precursors only -- the UDP-sugars and UDP-MurNAc-peptides of
+       the Mur pathway, lipid I and II, and the recycling products: anhydro-
+       MurNAc and GlcNAc-anhydro-MurNAc with and without their stems, the sugar
+       phosphates of recycling, free stem peptides and D-Ala-D-Ala. Not tried by
+       Automatic, which looks for sacculus muropeptides; chosen by hand, or
+       offered when a run finds little but nucleotide precursors. */
+    cytoDap: {
+      name: 'Cytoplasmic pool, mDAP (precursors and recycling products)', short: 'Cytoplasmic pool (mDAP)', type: 'precursors',
+      examples: 'soluble extracts of E. coli and other Gram-negatives, Bacillus, Mycobacterium',
+      glycans: ['gm', 'gm(Anh)'], stem: [['A'], ['E'], ['J'], ['A'], ['A']], stemLen: [0, 5], bridges: [], directLinks: true,
+      links: ['4-3', '3-3'], maxOligomer: 2, lpp: [], chains: false, extras: [],
+      prec: { udpSugars: true, udpPeptides: true, lipidI: true, lipidII: true, lipidIIBridges: true, recycling: true, freePeptides: true }
+    },
+    cytoLys: {
+      name: 'Cytoplasmic pool, Lys (precursors and recycling products)', short: 'Cytoplasmic pool (Lys)', type: 'precursors',
+      examples: 'soluble extracts of S. aureus, streptococci, enterococci and other Lys-type Gram-positives',
+      glycans: ['gm', 'gm(Anh)'], stem: [['A'], ['E', 'Q'], ['K'], ['A'], ['A']], stemLen: [0, 5], bridges: [], directLinks: false,
+      links: ['4-3'], maxOligomer: 2, lpp: [], chains: false, extras: [],
+      prec: { udpSugars: true, udpPeptides: true, lipidI: true, lipidII: true, lipidIIBridges: true, recycling: true, freePeptides: true }
     }
   };
+  /* the cytoplasmic pools, apart from the chemistries Automatic chooses among */
+  var POOL_ORDER = ['cytoDap', 'cytoLys'];
   var PROFILE_ORDER = ['gramneg', 'mxanthus', 'vibrio', 'oacetyl', 'acetobacter', 'bsubtilis', 'cdifficile', 'mycobacteria',
                        'saureus', 'streptococcus', 'pneumococcus', 'efaecium',
                        'streptomyces', 'thermus', 'spirochaete', 'mluteus', 'bifido', 'spore', 'leuconostoc', 'lplantarum'];
@@ -3049,7 +3201,7 @@ SAC.library = (function () {
           var res = st.slice();
           if (br) res[at - 1] = res[at - 1] + '[' + br + ']';
           if (/Lactam/.test(gly) && st.length) return;
-          if (!gly && st.length < 3) return;         /* a free peptide too short to matter */
+          if ((!gly || gly === 'lac') && st.length < 3) return;         /* a free peptide too short to matter */
           var text = !gly ? res.join('') : (st.length ? gly + '-' + res.join('') : gly);
           if (!text) return;
           if (seen[text]) return; seen[text] = 1;
@@ -3059,10 +3211,12 @@ SAC.library = (function () {
     });
     (p.lpp || []).forEach(function (lp) {
       p.glycans.forEach(function (gly) {
-        var text = gly + '-AEJ[' + lp + ']';
+        if (/Lactam/.test(gly)) return;
+        var text = (gly ? gly + '-' : '') + 'AEJ[' + lp + ']';
         if (seen[text]) return; seen[text] = 1;
         var u = makeUnit(text, gly, ['A', 'E', 'J'], '', p);
-        u.lpp = lp; u.cls = 'lpp';
+        u.lpp = lp;
+        if (!u.noSugar) u.cls = 'lpp';        /* a sugar-less one stays a peptide */
         units.push(u);
       });
     });
@@ -3085,7 +3239,12 @@ SAC.library = (function () {
       pos3: pos3, diamino: !!C.DIAMINO[pos3], hasLactam: mods.indexOf('Lactam') >= 0,
       amid: stem.filter(function (r) { return /Am/.test(r); }).length,
       deac: mods.indexOf('DeAc') >= 0 ? 1 : 0, oac: mods.indexOf('Ac') >= 0 ? 1 : 0,
-      cls: !gly ? 'nosugar' : (len ? 'peptide' : 'glycan'), noSugar: !gly
+      /* 'lac': the stem with only the lactyl of MurNAc left, as PGFinder's
+         "amidase products" of E. coli dimers are; like a bare stem it has no
+         sugar and no reducing end */
+      cls: !gly || gly === 'lac' ? 'nosugar' : (len ? 'peptide' : 'glycan'), noSugar: !gly || gly === 'lac', lac: gly === 'lac',
+      /* a minor variant of the chemistry: a glycan its defining set leaves out */
+      minor: !!(p && p.choose && p.choose.glycans && p.choose.glycans.indexOf(gly) < 0)
     };
   }
 
@@ -3112,7 +3271,11 @@ SAC.library = (function () {
     return null;
   }
   function acceptsAt(u, L, p) {
-    if (u.lpp || u.len < L.a) return false;          /* the Lpp remnant occupies the amine */
+    /* Braun's lipoprotein is joined by the epsilon-amine of its C-terminal
+       Lys to the L-centre carboxyl of mDAP, where D-Ala4 would otherwise sit:
+       the D-centre amine stays free, so a Tri-Lpp unit still accepts a
+       cross-link (E. coli Tetra-Tri-Lys-Arg). It cannot donate (see donorType). */
+    if (u.len < L.a) return false;
     var code = u.codes ? u.codes[L.a - 1] : (L.a === 3 ? u.pos3 : '');
     var at = p.bridgeAt || 3, bridged = !!u.bridge && at === L.a;
     if (L.d === 3 && L.a === 3 && code !== 'J' && !bridged) return false;
@@ -3183,7 +3346,7 @@ SAC.library = (function () {
       /* a sugar-free peptide that does not start Ala-Glu (DAP-Ala, say) is
          named by its residues, not by a stem length that would mislead */
       var s = u.noSugar && u.stem && !/^AE/.test(u.stem) ? 'pep·' + u.stem.split('').map(function (c) { return C.AA[c] ? C.AA[c].n : c; }).join('-')
-        : (u.noSugar ? 'pep·' : '') + (u.len ? STEM_WORD[u.len] || (u.len + '-mer') : 'Disacch');
+        : (u.lac ? 'lac·' : u.noSugar ? 'pep·' : '') + (u.len ? STEM_WORD[u.len] || (u.len + '-mer') : 'Disacch');
       if (u.bridge) s += '[' + u.bridge + ']';
       var m = [];
       if (u.anh) m.push('Anh');
@@ -3209,6 +3372,7 @@ SAC.library = (function () {
       kind: KIND[k] || (k + '-mer'), cls: kind, nStem: us.filter(function (u) { return u.len > 0; }).length,
       nAnh: us.filter(function (u) { return u.anh; }).length,
       nMod: us.reduce(function (s, u) { return s + u.nMod; }, 0),
+      nMinor: us.filter(function (u) { return u.minor; }).length,
       bridges: us.map(function (u) { return u.bridge; }).filter(Boolean),
       short: shortName(us)
     };
@@ -3235,13 +3399,19 @@ SAC.library = (function () {
     var uinfo = P.units.map(function (u) {
       var mods = [];
       u.glycan.forEach(function (x) { mods = mods.concat(x.mods); });
-      var bridge = '';
-      u.peptide.forEach(function (r) { if (r.branch && r.branch.length) bridge = r.branch.map(function (b) { return b.code; }).join(''); });
+      var bridge = '', lpp = '';
+      u.peptide.forEach(function (r) {
+        if (!r.branch || !r.branch.length) return;
+        var br = r.branch.map(function (b) { return b.code; }).join('');
+        /* a Lys-led branch on mDAP is a lipoprotein remnant (Lpp's C-terminal
+           Lys), not a cross-bridge */
+        if (r.code === 'J' && r.branch[0].code === 'K') lpp = br; else bridge = br;
+      });
       return { len: u.peptide.length, bridge: bridge, anh: mods.indexOf('Anh') >= 0, deac: mods.indexOf('DeAc') >= 0 ? 1 : 0,
                oac: mods.indexOf('Ac') >= 0 ? 1 : 0, amid: u.peptide.filter(function (r) { return r.mods.indexOf('Am') >= 0; }).length,
                stem: u.peptide.map(function (r) { return r.code; }).join(''),
                glycan: u.glycan.map(function (x) { return x.code + (x.mods.length ? '(' + x.mods.join(',') + ')' : ''); }).join(''),
-               mods: mods, lpp: '', noSugar: !u.glycan.some(function (x) { return x.code === 'g' || x.code === 'm'; }),
+               mods: mods, lpp: lpp, noSugar: !u.glycan.some(function (x) { return x.code === 'g' || x.code === 'm'; }),
                nMod: mods.filter(function (m) { return m !== 'Anh'; }).length };
     });
     var red = g.nodes.filter(function (n) { return n.reducing; }).length;
@@ -3253,8 +3423,24 @@ SAC.library = (function () {
     return { k: k, units: [], uinfo: uinfo, formula: g.formula, fstr: C.fStr(g.formula), mass0: g.mass, nRed: red,
              kind: KIND[k] || (k + '-mer'), cls: cls, nStem: uinfo.filter(function (u) { return u.len > 0; }).length || (cls === 'peptide-only' ? 1 : 0),
              nAnh: uinfo.filter(function (u) { return u.anh; }).length, nMod: uinfo.reduce(function (s2, u) { return s2 + u.nMod; }, 0),
-             bridges: uinfo.map(function (u) { return u.bridge; }).filter(Boolean), short: uinfo.length ? shortName(uinfo) : t,
+             bridges: uinfo.map(function (u) { return u.bridge; }).filter(Boolean), short: precShort(g.text, uinfo.length ? shortName(uinfo) : t),
              text: g.text, links: links, linkSure: !!P.descs.length || !nX, isomers: [g.text], listed: true };
+  }
+  /* Precursors and recycling products named for what they are: their stems
+     alone would read as muropeptides (UDP-MurNAc-pentapeptide as "Penta",
+     UDP-GlcNAc as "Disacch") */
+  function precShort(t, base) {
+    var stem = String(base).replace(/\(Anh\)/, '').replace(/\(Anh,/, '(');
+    if (t === 'g(UDP)') return 'UDP-GlcNAc';
+    if (t === 'm(UDP)') return 'UDP-MurNAc';
+    if (/^m\(UDP\)-/.test(t)) return 'UDP-MurNAc-' + stem;
+    if (/^m\(PPL\)-/.test(t)) return 'Lipid I-' + stem;
+    if (/^g[^m]*m\(PPL\)-/.test(t)) return 'Lipid II-' + stem;
+    if (t === 'm(Anh)') return 'anhMurNAc';
+    if (/^m\(Anh\)-/.test(t)) return 'anhMurNAc-' + stem;
+    if (t === 'g(P)') return 'GlcNAc-P';
+    if (t === 'm(P)') return 'MurNAc-P';
+    return base;
   }
 
   /* Monomers + dimers from every unit (stage 1), and higher oligomers from a
@@ -3274,6 +3460,9 @@ SAC.library = (function () {
     var listed = (p.extras || []).concat(opt.extras || []);
     if ((opt.stage || 1) === 1 && !opt.rulesOnly && (p.type === 'precursors' || p.type === 'both' || p.precursors)) listed = listed.concat(precursorStructures(p));
     var seenX = {};
+    /* a listed structure the rules already make (a bare or lactyl stem, say)
+       is not added a second time */
+    units.forEach(function (u) { seenX[u.text] = 1; });
     listed.forEach(function (t) {
       if (seenX[t]) return; seenX[t] = 1;
       try { entries.push(extraEntry(t)); } catch (e) { /* skip unreadable extras */ }
@@ -3417,10 +3606,18 @@ SAC.library = (function () {
           if (at <= len) p.bridges.forEach(function (b) { add('gm(PPL)-' + st.slice(0, at).join('') + '[' + b + ']' + st.slice(at).join('')); });
         }
         if (o.recycling) add('m(Anh)-' + s);
+        /* GlcNAc-anhydro-MurNAc-peptides: what AmpG brings into the cytoplasm */
+        if (o.recycling && len >= 3) add('gm(Anh)-' + s);
         if (o.freePeptides && len >= 2) add(s);
       });
     }
-    if (o.recycling) { add('m(Anh)'); add('gm(Anh)'); }
+    if (o.recycling) {
+      add('m(Anh)'); add('gm(Anh)');
+      /* the sugar phosphates of recycling: GlcNAc-6-P (NagK) and MurNAc-6-P (AnmK, MurK) */
+      add('g(P)'); add('m(P)');
+    }
+    /* the dipeptide the Ddl ligase makes for the end of the stem (D-Ala-D-Ala) */
+    if (o.freePeptides && stem.length >= 5) (stem[3] || []).forEach(function (a) { (stem[4] || []).forEach(function (b) { add(resText(a) + resText(b)); }); });
     var ok = [];
     out.forEach(function (t) { if (ok.length < 200) { try { C.parse(t); ok.push(t); } catch (e) { /* skip */ } } });
     return ok;
@@ -3455,7 +3652,7 @@ SAC.library = (function () {
     return groups;
   }
 
-  return { PROFILES: PROFILES, PROFILE_ORDER: PROFILE_ORDER, clone: clone, unitsOf: unitsOf, buildSpace: buildSpace,
+  return { PROFILES: PROFILES, PROFILE_ORDER: PROFILE_ORDER, POOL_ORDER: POOL_ORDER, clone: clone, unitsOf: unitsOf, buildSpace: buildSpace,
            groupByFormula: groupByFormula, donorType: donorType, accepts: accepts, linkOf: linkOf, chainInfo: chainInfo,
            makeEntry: makeEntry, shortName: shortName, oligoText: oligoText, extraEntry: extraEntry, KIND: KIND,
            precursorStructures: precursorStructures, PREC_DEFAULT: PREC_DEFAULT, parseLink: parseLink, canon: canon };
@@ -4019,6 +4216,8 @@ SAC.search = (function () {
       if (r.q > qmax) return;
       var F = r.F, g = r.hits[0].g;
       if (F.nIso < 2) return;
+      /* the curve is learnt from the chemistry's defining units only */
+      if (g.nMinor) return;
       if (r.hits.length > 1 && Math.abs(r.hits[1].g.mass - g.mass) / g.mass * 1e6 > 0.5 && r.hits[1].score > r.hits[0].score - 1) return;
       F.envs.forEach(function (e) {
         var mzT = (g.mass + e.z * PROTON) / e.z, ep = envPos(e);
@@ -4104,7 +4303,7 @@ SAC.search = (function () {
     var rows = [], dec = [];
     features.forEach(function (F) {
       if (F.lone || F.parent) return;
-      if (ctx.minIso && F.nIso < ctx.minIso) return;
+      if (ctx.minIso && F.nIso < ctx.minIso && !F.monoOnly) return;
       var tolF = tolFor(F, ctx);
       var hits = lookup(tIdx, F.mass, tolF);
       hits.forEach(function (h) { var s = scoreMatch(F, h, ctx); h.score = s.score; h.ll = s.ll; h.iso = s.iso; });
@@ -4231,18 +4430,35 @@ SAC.msms = (function () {
   /* judge one ion against the precursor profile */
   Ctx.prototype.judge = function (w, tr) {
     if (tr.n < 3 || tr.top <= 0) return { ok: false, r: 0 };
-    var r = U.pearson(tr.y, w.prec, tr.y.length);
+    var y = tr.y;
+    /* weak ions (a pool's fragments) miss scans; a three-point smoothing
+       keeps one dropped scan from breaking an elution profile apart */
+    if (this.opt.smooth) {
+      var sm = new Float64Array(y.length);
+      for (var i = 0; i < y.length; i++) sm[i] = 0.5 * y[i] + 0.25 * (i > 0 ? y[i - 1] : 0) + 0.25 * (i < y.length - 1 ? y[i + 1] : 0);
+      y = sm;
+    }
+    var r = U.pearson(y, w.prec, y.length);
     var floor = 3 * this.noise[tr.topScan];
     var nearApex = Math.abs(tr.topScan - w.apex) <= 3;
     return { ok: r >= (this.opt.minR || 0.7) && tr.top >= floor && nearApex, r: r, strong: r >= 0.85 };
   };
 
   /* ---------- high-energy calibration ---------- */
-  function calibrate(ctx, feats) {
+  function calibrate(ctx, feats, opt) {
     if (!ctx.ms2) return { ok: false, reason: 'no high-energy function' };
+    opt = opt || {};
     var pts = [];
     var cand = feats.filter(function (F) { return !F.lone && !F.parent && F.nIso >= 3 && (F.charges.length >= 2 || F.charges[0] >= 2); })
                     .slice(0, 160);
+    /* a run calibrated on a few metabolites: their own ions (and a
+       nucleotide's loss of UDP) calibrate this channel too, together with the
+       multiply charged features inside the m/z range they cover -- beyond it
+       the low-energy masses are themselves extrapolated */
+    if (opt.lo !== undefined) {
+      var anch = feats.filter(function (F) { return F.calAnchor && !F.parent; });
+      cand = anch.concat(cand.filter(function (F) { return !F.calAnchor && F.envs.every(function (e) { return e.mz >= opt.lo - 50 && e.mz <= opt.hi + 50; }); }));
+    }
     var save = ctx.model; ctx.model = null;
     cand.forEach(function (F, fi) {
       var w = ctx.window(F), ions = [];
@@ -4251,6 +4467,7 @@ SAC.msms = (function () {
       zs.forEach(function (z) {
         ions.push((F.mass + z * PROTON) / z);
         ions.push((F.mass - GLCNAC + z * PROTON) / z);
+        if (F.calAnchor && F.mass > 500) ions.push((F.mass - UDP_LOSS + z * PROTON) / z);
       });
       ions.forEach(function (m) {
         var tr = ctx.trace(w, m, 120);
@@ -4265,6 +4482,7 @@ SAC.msms = (function () {
     /* each (feature, ion) is its own anchor molecule here */
     var M = S.calibrate(pts, { minAnchors: 6, ransacTol: 8 });
     M.nPts = pts.length;
+    if (opt.lo !== undefined) M.rawPts = pts;
     return M;
   }
 
@@ -4331,6 +4549,19 @@ SAC.msms = (function () {
     for (var i = g.nodes.length - 1; i >= 0; i--) { var nd = g.nodes[i]; if (nd.kind === 'aa' && !nd.branch) { star = i; break; } }
     if (star < 0) for (i = g.nodes.length - 1; i >= 0; i--) if (g.nodes[i].kind === 'aa') { star = i; break; }
     if (star < 0) for (i = 0; i < g.nodes.length; i++) if (g.nodes[i].kind === 'sugar') { star = i; break; }
+    /* nucleotide and lipid-linked precursors: their lactyl-peptide ion keeps
+       the water of the ether (measured on UDP-MurNAc-pentapeptide: m/z 605.28,
+       beside the UDP-loss ion at 790.35), and UMP can leave instead of UDP */
+    var pm = /^g?m\((?:UDP|PPL)\)-([^~=]+)$/.exec(text);
+    if (pm) {
+      try {
+        var pep = C.info(pm[1], false).mass, aas = [];
+        g.nodes.forEach(function (nd, ni) { if (nd.kind === 'aa') aas.push(ni); });
+        var lac = pep + 72.021129 + PROTON;
+        fr.push({ mz: lac, z: 1, neutral: lac - PROTON, formula: '', type: 'lactyl', label: 'Lac-' + pm[1] + ' (+H₂O)', cuts: 1, weight: 0.75, nodes: aas });
+        if (/UDP/.test(text)) fr.push({ mz: g.mass - C.fMass(UMP) + PROTON, z: 1, neutral: g.mass - C.fMass(UMP), formula: '', type: 'glycopeptide', label: 'M − UMP', cuts: 1, weight: 0.6, nodes: aas });
+      } catch (e) { /* a stem that cannot be read alone */ }
+    }
     fr.forEach(function (f) { f.star = f.nodes && f.nodes.indexOf(star) >= 0; });
     var out = { mass: g.mass, frags: fr, star: star };
     fragCache[key] = out;
@@ -5154,6 +5385,164 @@ SAC.pipeline = (function () {
     { name: 'Leu-enkephalin [M+H]⁺', f: { C: 28, H: 37, N: 5, O: 7 }, z: 1 },
     { name: 'Glu-fibrinopeptide B [M+2H]²⁺', f: { C: 66, H: 95, N: 19, O: 26 }, z: 2 }
   ];
+  /* ---------- calibration without muropeptides ----------
+     A cytoplasmic extract holds none of the sacculus muropeptides the m/z
+     curve is normally learnt from, and its lock spray may be too weak to use.
+     Two other sources are tried. (1) Metabolites every cell holds --
+     nucleotides, cofactors, amino acids, polyamines -- and the pool's own
+     precursors: for each, the strongest feature within a wide window; a
+     smooth error curve must run through at least five different ones
+     (RANSAC, then the usual fit), so chance matches, scattered over +-60 ppm,
+     cannot make one. (2) The curve of another run analysed in the same
+     session (a sacculus run of the same day, typically): its shape over m/z
+     is the instrument's, its level is re-set on this run's own calibrants,
+     and it is taken only if at least three of them agree with it. */
+  var CALIBRANTS = [
+    ['adenine', 'C5H5N5'], ['adenosine', 'C10H13N5O4'], ['AMP', 'C10H14N5O7P'], ['ADP', 'C10H15N5O10P2'], ['ATP', 'C10H16N5O13P3'], ['cAMP', 'C10H12N5O6P'],
+    ['guanine', 'C5H5N5O'], ['guanosine', 'C10H13N5O5'], ['GMP', 'C10H14N5O8P'], ['GDP', 'C10H15N5O11P2'], ['GTP', 'C10H16N5O14P3'],
+    ['cytidine', 'C9H13N3O5'], ['CMP', 'C9H14N3O8P'], ['CDP', 'C9H15N3O11P2'], ['CTP', 'C9H16N3O14P3'],
+    ['uracil', 'C4H4N2O2'], ['uridine', 'C9H12N2O6'], ['UMP', 'C9H13N2O9P'], ['UDP', 'C9H14N2O12P2'], ['UTP', 'C9H15N2O15P3'],
+    ['hypoxanthine', 'C5H4N4O'], ['inosine', 'C10H12N4O5'], ['IMP', 'C10H13N4O8P'], ['xanthine', 'C5H4N4O2'], ['thymidine', 'C10H14N2O5'],
+    ['NAD', 'C21H27N7O14P2'], ['NADH', 'C21H29N7O14P2'], ['NADP', 'C21H28N7O17P3'], ['NADPH', 'C21H30N7O17P3'], ['FAD', 'C27H33N9O15P2'],
+    ['FMN', 'C17H21N4O9P'], ['riboflavin', 'C17H20N4O6'], ['methylthioadenosine', 'C11H15N5O3S'], ['S-adenosylmethionine', 'C15H22N6O5S'],
+    ['S-adenosylhomocysteine', 'C14H20N6O5S'], ['glutathione', 'C10H17N3O6S'], ['glutathione disulfide', 'C20H32N6O12S2'], ['CoA', 'C21H36N7O16P3S'],
+    ['acetyl-CoA', 'C23H38N7O17P3S'], ['UDP-glucose', 'C15H24N2O17P2'], ['ADP-ribose', 'C15H23N5O14P2'], ['NMN', 'C11H15N2O8P'], ['nicotinamide', 'C6H6N2O'],
+    ['pantothenate', 'C9H17NO5'], ['thiamine', 'C12H16N4OS'], ['betaine / Val', 'C5H11NO2'], ['carnitine', 'C7H15NO3'], ['spermidine', 'C7H19N3'],
+    ['putrescine', 'C4H12N2'], ['cadaverine', 'C5H14N2'], ['Glu', 'C5H9NO4'], ['Gln', 'C5H10N2O3'], ['Asp', 'C4H7NO4'], ['Asn', 'C4H8N2O3'], ['Pro', 'C5H9NO2'],
+    ['Leu / Ile', 'C6H13NO2'], ['Phe', 'C9H11NO2'], ['Tyr', 'C9H11NO3'], ['Trp', 'C11H12N2O2'], ['Met', 'C5H11NO2S'], ['His', 'C6H9N3O2'], ['Lys', 'C6H14N2O2'],
+    ['Arg', 'C6H14N4O2'], ['Thr', 'C4H9NO3'], ['pyroglutamate', 'C5H7NO3'], ['Orn', 'C5H12N2O2'], ['citrulline', 'C6H13N3O3'], ['trehalose', 'C12H22O11'],
+    ['ppGpp', 'C10H17N5O17P4'], ['c-di-GMP', 'C20H24N10O14P2']
+  ];
+  var calMasses = null;
+  function calibrantMasses() {
+    if (!calMasses) calMasses = CALIBRANTS.map(function (c) { return { name: c[0], m: C.fMass(C.fParse(c[1])) }; });
+    return calMasses;
+  }
+  /* for each calibrant, the strongest feature within the window */
+  function calibrantPoints(feats, cands, ppm) {
+    var by = {};
+    feats.forEach(function (F) {
+      if (F.parent || !(F.sn >= 15)) return;
+      var m0 = F.massRaw || F.mass;
+      cands.forEach(function (c) {
+        if (Math.abs(m0 - c.m) / c.m * 1e6 > ppm) return;
+        if (!by[c.name] || F.area > by[c.name].F.area) by[c.name] = { F: F, c: c };
+      });
+    });
+    var pts = [];
+    Object.keys(by).forEach(function (k) {
+      var F = by[k].F, c = by[k].c;
+      F.envs.forEach(function (e) {
+        var mzT = (c.m + e.z * PROTON) / e.z;
+        pts.push({ mz: e.mz, err: (e.mz - mzT) / mzT * 1e6, w: Math.log10(Math.max(e.monoHeight, 10)), rt: e.rt, fid: F.id, z: e.z, mass: e.mass,
+                   h: e.monoHeight, name: k });
+      });
+    });
+    return pts;
+  }
+  /* another run's curve, without its retention-time drift, its level moved by off ppm */
+  function borrowedModel(cal, off) {
+    if (!cal || !cal.ok) return null;
+    var M = JSON.parse(JSON.stringify(cal));
+    if (M.kind === 'additive') {
+      if (!M.comps) return null;
+      M.comps = M.comps.filter(function (K) { return K.name !== 'rt'; });
+      M.comps.forEach(function (K) { if (K.name === 'mz') K.v = K.v.map(function (v) { return v + off; }); });
+      M.useRt = false;
+    } else { if (!M.coef) return null; M.coef[0] += off; M.crt = 0; }
+    M.ok = true; delete M.points;
+    return M;
+  }
+  function calibrantLine(pts, tol) {
+    var names = namesOf(pts);
+    if (names.length < 5) return { ok: false, reason: 'only ' + names.length + ' candidate calibrants' };
+    var TOL = tol || 4, best = null;
+    function fit(P) {
+      var sw = 0, sx = 0, sy = 0, sxx = 0, sxy = 0;
+      P.forEach(function (p) { var x = (p.mz - 1000) / 1000, w = p.w; sw += w; sx += w * x; sy += w * p.err; sxx += w * x * x; sxy += w * x * p.err; });
+      var d = sw * sxx - sx * sx;
+      if (Math.abs(d) < 1e-12) return [sy / sw, 0];
+      var b = (sw * sxy - sx * sy) / d;
+      return [(sy - b * sx) / sw, b];
+    }
+    function res(c, p) { return p.err - (c[0] + c[1] * (p.mz - 1000) / 1000); }
+    for (var i = 0; i < pts.length; i++) for (var j = i + 1; j < pts.length; j++) {
+      var a = pts[i], b = pts[j];
+      if (a.name === b.name || Math.abs(a.mz - b.mz) < 60) continue;
+      var c = fit([{ mz: a.mz, err: a.err, w: 1 }, { mz: b.mz, err: b.err, w: 1 }]);
+      if (Math.abs(c[1]) > 200) continue;                     /* > 200 ppm per 1000 m/z is no instrument */
+      var inl = pts.filter(function (p) { return Math.abs(res(c, p)) <= TOL; }), n = namesOf(inl).length;
+      if (!best || n > best.n) best = { n: n, inl: inl };
+    }
+    if (!best || best.n < 5) return { ok: false, reason: 'no straight error line through five or more calibrants' };
+    var c2 = fit(best.inl);
+    var inl2 = pts.filter(function (p) { return Math.abs(res(c2, p)) <= TOL; });
+    var c3 = fit(inl2), r = inl2.map(function (p) { return res(c3, p); });
+    var nm = namesOf(inl2), mzs = inl2.map(function (p) { return p.mz; });
+    var lo = Math.min.apply(null, mzs), hi = Math.max.apply(null, mzs);
+    if (nm.length < 5 || hi - lo < 150) return { ok: false, reason: nm.length + ' calibrants agree, over ' + Math.round(hi - lo) + ' m/z' };
+    var sd = Math.max(1, Math.sqrt(r.reduce(function (s, v) { return s + v * v; }, 0) / Math.max(1, r.length - 2)));
+    var rts = inl2.map(function (p) { return p.rt; });
+    var rms0 = Math.sqrt(inl2.reduce(function (s, p) { return s + p.err * p.err; }, 0) / inl2.length);
+    /* the line is continued a little past its last calibrants, then held */
+    return { ok: true, kind: 'poly', coef: c3, crt: 0, rt0: U.median(rts), rtLo: Math.min.apply(null, rts), rtHi: Math.max.apply(null, rts),
+             mzLo: Math.max(50, lo - 150), mzHi: hi + 300, deg: 1, useRt: false, sd: sd, nMol: nm.length, nIons: inl2.length, n0: pts.length,
+             rmsBefore: rms0, rmsAfter: sd, calibrants: nm, source: 'metabolites', reason: '',
+             points: inl2.map(function (p, k) { return { mz: p.mz, err: p.err, after: r[k], rt: p.rt, fid: p.fid, z: p.z, mass: p.mass, h: p.h, name: p.name }; }) };
+  }
+  function namesOf(pts) { var o = {}; pts.forEach(function (p) { o[p.name] = 1; }); return Object.keys(o); }
+  function poolCalibration(feats, extra, donors) {
+    var cands = calibrantMasses().concat(extra || []);
+    var pts = calibrantPoints(feats, cands, 60);
+    var out = { tried: namesOf(pts).length, own: null, borrowed: null, M: null };
+    /* (1) this run's own calibrants: a straight line in m/z through as many
+       different calibrants as possible (a time-of-flight error is close to
+       linear over a few hundred m/z; a curve would wander between few points) */
+    var Mo = calibrantLine(pts), ownNames = Mo.ok ? Mo.calibrants : [];
+    out.own = Mo.ok ? { n: ownNames.length, sd: Mo.sd, names: ownNames } : { reason: Mo.reason };
+    /* (2) a curve from another run of the session, re-levelled here */
+    var bestB = null;
+    (donors || []).forEach(function (d) {
+      var M0 = borrowedModel(d.cal, 0);
+      if (!M0) return;
+      var res = pts.map(function (p) { return { p: p, r: p.err - S.evalModel(M0, p.mz, p.rt, p.z, p.h) }; });
+      if (res.length < 3) return;
+      /* the level: the offset most calibrants agree on (a 4-ppm window slid over the residuals) */
+      var rs = res.map(function (x) { return x.r; }).sort(function (a, b) { return a - b; }), bestN = 0, off = 0;
+      for (var i = 0; i < rs.length; i++) {
+        var win = rs.filter(function (v) { return v >= rs[i] && v <= rs[i] + 8; });
+        var n = namesOf(res.filter(function (x) { return x.r >= rs[i] && x.r <= rs[i] + 8; }).map(function (x) { return x.p; })).length;
+        if (n > bestN) { bestN = n; off = U.median(win); }
+      }
+      var agree = res.filter(function (x) { return Math.abs(x.r - off) <= 4; });
+      var names = namesOf(agree.map(function (x) { return x.p; }));
+      if (names.length < 3) return;
+      var sdR = Math.max(1, 1.4826 * U.mad(agree.map(function (x) { return x.r - off; }), 0));
+      if (!bestB || names.length > bestB.names.length) bestB = { d: d, off: off, names: names, sd: Math.max(sdR, d.cal.sd || 1), pts: agree.map(function (x) { return x.p; }) };
+    });
+    if (bestB) out.borrowed = { from: bestB.d.name, n: bestB.names.length, offset: bestB.off, names: bestB.names };
+    /* the borrowed curve, learnt on many anchors, wins unless this run's own
+       calibrants clearly outnumber those agreeing with it */
+    if (bestB && (!Mo.ok || bestB.names.length >= ownNames.length - 1)) {
+      var Mb = borrowedModel(bestB.d.cal, bestB.off);
+      Mb.source = 'borrowed'; Mb.borrowedFrom = bestB.d.name; Mb.offset = bestB.off; Mb.sd = bestB.sd;
+      Mb.nMol = bestB.names.length; Mb.nIons = bestB.names.length; Mb.calibrants = bestB.names; Mb.reason = '';
+      Mb.anchorPts = bestB.pts;
+      out.M = Mb;
+    } else if (Mo.ok) out.M = Mo;
+    /* the calibrants also calibrate the high-energy channel (their ions
+       survive there), and only inside the m/z range they cover */
+    if (out.M) {
+      var ap = out.M.anchorPts || out.M.points || [], byId = {};
+      feats.forEach(function (F) { byId[F.id] = F; });
+      ap.forEach(function (p) { if (byId[p.fid]) byId[p.fid].calAnchor = p.name || true; });
+      var am = ap.map(function (p) { return p.mz; });
+      out.M.anchorLo = Math.min.apply(null, am); out.M.anchorHi = Math.max.apply(null, am);
+      delete out.M.anchorPts;
+    }
+    return out;
+  }
+
   function lockMass(run) {
     var fl = run.roles && run.roles.lock && run.roles.lock.length ? run.roles.lock[0] : null;
     if (fl === null || !run.functions[fl]) return { ok: false, reason: 'no lock-spray function in this file' };
@@ -5237,6 +5626,9 @@ SAC.pipeline = (function () {
       g.members.sort(function (a, b) { return (b.prior || 0) - (a.prior || 0) || (a.text.length - b.text.length); });
       g.best = g.members[0];
       g.k = g.best.k;
+      /* minor variants a composition cannot do without (none, if any of its
+         arrangements is made of the chemistry's defining units) */
+      g.nMinor = g.members.reduce(function (m, e) { return Math.min(m, e.nMinor || 0); }, Infinity) || 0;
     });
     groups.sort(function (a, b) { return a.mass - b.mass; });
     return groups;
@@ -5301,11 +5693,12 @@ SAC.pipeline = (function () {
 
   /* ---------- fit one profile quickly (for the automatic choice) ---------- */
   function quickFit(feats, profile, mode, wide, trustOnly) {
+    if (profile.choose) profile = Object.assign(L.clone(profile), L.clone(profile.choose));
     var sp = L.buildSpace(profile, { stage: 1, maxModsPerMolecule: 1 });
     priors(sp);
     var G = groupsFor(sp.entries, mode);
     var M = S.calibrate(S.anchorIons(feats, S.index(G), wide), { minAnchors: 5 });
-    var res = { profile: profile, mode: mode, model: M, groups: G.length, explained: 0, decoy: 0, n: 0, hit: {}, hitF: {}, fset: {} };
+    var res = { profile: profile, mode: mode, model: M, groups: G.length, explained: 0, decoy: 0, n: 0, hit: {}, hitF: {}, fset: {}, hitUnits: {}, monoKeys: {} };
     G.forEach(function (g) { res.fset[g.fstr] = 1; });
     if (!M.ok) return res;
     var tol = Math.min(8, Math.max(3, 3 * M.sd));
@@ -5318,12 +5711,49 @@ SAC.pipeline = (function () {
       var good = F.charges.length >= 2 || F.charges[0] >= 2 || F.sn >= 30;
       if (!good) return;
       var th = S.lookup(tIdx, mass, tol);
-      if (th.length) { res.explained += F.area; res.n++; res.hit[F.id] = F.area; res.hitF[F.id] = th.map(function (h) { return h.g.fstr; }); }
+      if (th.length) {
+        res.explained += F.area; res.n++; res.hit[F.id] = F.area; res.hitF[F.id] = th.map(function (h) { return h.g.fstr; });
+        res.hitUnits[F.id] = unitSets(sp, th, res.monoKeys);
+      }
       var dn = 0; dIdx.forEach(function (di) { if (S.lookup(di, mass, tol).length) dn++; });
       res.decoy += F.area * dn / dIdx.length;
     });
     res.net = res.explained - res.decoy;
     return res;
+  }
+  /* The stems an explanation is built from, for the plausibility test of the
+     chemistry choice: a monomer (or a chain, a listed structure) is its own
+     support and adds its stems to monoKeys; an oligomer lists, for each of its
+     arrangements, the stems it joins. */
+  function unitSets(sp, th, monoKeys) {
+    var sets = [];
+    th.forEach(function (h) {
+      h.g.members.slice(0, 8).forEach(function (e) {
+        var us = (e.units || []).map(function (i) { return sp.units[i]; }).filter(Boolean);
+        if (e.k <= 1 || e.cls === 'chain' || e.listed || !us.length) {
+          sets.push(null);
+          /* every leading part of a monomer's stem: a donor keeps only the
+             residues up to its donor position (the rest leaves in the
+             transpeptidation), so a Tetra donor is supported by a Penta too */
+          us.forEach(function (u) {
+            for (var n = 1; n <= (u.codes || []).length; n++) monoKeys[stemKey(u, n)] = 1;
+          });
+        } else sets.push(us.map(function (u) { return stemKey(u); }));
+      });
+    });
+    return sets;
+  }
+  function stemKey(u, n) {
+    var c = u.codes || [], len = n === undefined ? c.length : n;
+    return c.slice(0, len).join('') + '|' + (len === c.length ? u.lpp || '' : '') + '|' + (len >= 3 ? u.bridge || '' : '');
+  }
+  /* an oligomer only one chemistry explains is credible when every stem it
+     joins is also seen in a monomer: a dimer of two rare stems, neither found
+     on its own, is far more likely a chance match of the larger space */
+  function plausibleHit(A, k) {
+    var sets = A.hitUnits && A.hitUnits[k];
+    if (!sets) return true;
+    return sets.some(function (st) { return !st || st.every(function (key) { return A.monoKeys[key]; }); });
   }
   /* Choosing between chemistries. Net signal alone favours a chemistry that
      contains another one plus a few extras (M. xanthus = Gram-negative + mod X):
@@ -5341,6 +5771,7 @@ SAC.pipeline = (function () {
        no evidence for either chemistry */
     Object.keys(A.hit).forEach(function (k) {
       if (A.hitF[k].some(function (f) { return B.fset[f]; })) return;
+      if (!plausibleHit(A, k)) return;
       area += A.hit[k]; n++;
     });
     var gain = area - Math.max(0, A.decoy - B.decoy);
@@ -5357,6 +5788,7 @@ SAC.pipeline = (function () {
     });
     return area;
   }
+  function isGeneric(r) { return !r.lib && !!(L.PROFILES[r.id] && L.PROFILES[r.id].generic); }
   function chooseChemistry(ranking, names) {
     names = names || {};
     var nm = function (id) { return names[id] || (L.PROFILES[id] ? L.PROFILES[id].short : id); };
@@ -5364,8 +5796,12 @@ SAC.pipeline = (function () {
     var C2 = ranking.filter(function (r) { return r.model && r.model.ok && (r.net || 0) >= 0.5 * top && top > 0; });
     if (!C2.length) return { id: ranking.length && ranking[0].net > 0 ? ranking[0].id : 'gramneg', why: '' };
     C2.forEach(function (r) { r.wins = 0; r.beatBy = []; });
+    var pairs = {};
     for (var i = 0; i < C2.length; i++) for (var j = i + 1; j < C2.length; j++) {
-      var a = C2[i], b = C2[j], big = a.groups >= b.groups ? a : b, small = big === a ? b : a;
+      /* the one that must earn its extras: the larger search space, or the
+         one that is not the generic default */
+      var a = C2[i], b = C2[j], ga = isGeneric(a), gb = isGeneric(b);
+      var big = ga !== gb ? (ga ? b : a) : (a.groups >= b.groups ? a : b), small = big === a ? b : a;
       var g = exclusiveGain(big, small), winner;
       var bigN = (big.net || 0) + missedBy(small, big), smallN = (small.net || 0) + missedBy(big, small);
       if (g.ok && bigN > smallN) winner = big;
@@ -5373,15 +5809,27 @@ SAC.pipeline = (function () {
       else winner = smallN >= bigN ? small : big;
       winner.wins++;
       (winner === a ? b : a).beatBy.push({ id: winner.id, gain: g.gain, n: g.n });
+      pairs[a.id + '|' + b.id] = pairs[b.id + '|' + a.id] = { winner: winner, big: big, g: g, generic: ga !== gb };
     }
     C2.sort(function (x, y) { return y.wins - x.wins || (y.net || 0) - (x.net || 0); });
     var best = C2[0], netTop = ranking.slice().sort(function (x, y) { return (y.net || 0) - (x.net || 0); })[0];
+    /* why the chemistry with the most signal was not the one chosen, from
+       their own comparison */
     var why = '';
     if (netTop && netTop.id !== best.id) {
-      var gg = exclusiveGain(netTop, best);
-      why = nm(netTop.id) + ' explained slightly more in total, but what only it explains (' + gg.n + ' features, ' +
-            (gg.gain > 0 ? UIpct(gg.gain / Math.max(netTop.explained, 1) * 100) + '% of its signal after decoys' : 'no more than its decoys') +
-            ') does not justify its larger search space, so the simpler ' + nm(best.id) + ' was chosen.';
+      var pr = pairs[netTop.id + '|' + best.id];
+      var lead = nm(netTop.id) + ' explained the most signal after decoys (' + UIpct(Math.max(0, (netTop.net || 0) / Math.max(best.net || 0, 1) - 1) * 100) + '% more than ' + nm(best.id) + ')';
+      var gainTxt = function (g, of) {
+        return g.n + ' feature' + (g.n === 1 ? '' : 's') + ', ' + (g.gain > 0 ? UIpct(g.gain / Math.max(of.explained, 1) * 100) + '% of its signal after decoys' : 'no more than its decoys');
+      };
+      if (pr && pr.winner === best && pr.big === netTop) {
+        why = lead + ', but what only it explains (' + gainTxt(pr.g, netTop) + ') ' +
+              (pr.generic ? 'is not enough to set aside the default, ' + nm(best.id) : 'does not justify its larger search space') + ', so ' + nm(best.id) + ' was chosen.';
+      } else if (pr && pr.winner === best) {
+        why = lead + ', but ' + nm(best.id) + ' explains what ' + nm(netTop.id) + ' cannot (' + gainTxt(pr.g, best) + '), so ' + nm(best.id) + ' was chosen.';
+      } else {
+        why = lead + ', but ' + nm(best.id) + ' won more of the comparisons with the other chemistries (' + best.wins + ' against ' + (netTop.wins || 0) + '), so it was chosen.';
+      }
     }
     return { id: best.id, why: why };
   }
@@ -5445,7 +5893,7 @@ SAC.pipeline = (function () {
     /* 2. chemistry and reduction state */
     say('Choosing the chemistry', 0.35);
     var chosen = null, ranking = [], chemWhy = '', names = {}, chosenLib = null;
-    L.PROFILE_ORDER.forEach(function (id) { names[id] = L.PROFILES[id].short; });
+    L.PROFILE_ORDER.concat(L.POOL_ORDER).forEach(function (id) { names[id] = L.PROFILES[id].short; });
     autoLibs.forEach(function (lb) { names[lb.id] = lb.name || 'Library'; });
     if (st.profile === 'auto' && !st.customProfile) {
       st.autoProfiles.forEach(function (id) {
@@ -5476,6 +5924,10 @@ SAC.pipeline = (function () {
       ['reduced', 'none', 'partial'].forEach(function (m) { redTest[m] = quickFit(feats, profile, m, st.wideppm).net || 0; });
       var simple = redTest.reduced >= redTest.none ? 'reduced' : 'none';
       mode = redTest.partial > 1.05 * Math.max(redTest.reduced, redTest.none) ? 'partial' : simple;
+      /* a cytoplasmic pool has too few reducing ends to judge by (UDP and
+         the lipid block them): the free sugars and sugar phosphates are
+         searched both ways */
+      if (profile.type === 'precursors') mode = 'partial';
     }
     tm.profile = Date.now() - t0;
 
@@ -5559,12 +6011,25 @@ SAC.pipeline = (function () {
         if (okC[0].M !== M1 && (!M1.ok || okC[0].net > 1.2 * fullNet)) { M1 = okC[0].M; M1.boot = okC[0].kind; calBoot.chosen = okC[0].kind; }
       }
     }
-    if (M1.ok) {
+    /* no muropeptides to learn the curve from (a cytoplasmic pool, or a run
+       where nothing fitted): metabolites, or another run's curve */
+    var poolCal = null;
+    if (!M1.ok && (profile.type === 'precursors' || (st.calDonors || []).length)) {
+      var calExtra = [];
+      if (profile.type === 'precursors') sp1.entries.forEach(function (e) {
+        var nm = e.short && e.short !== e.text ? e.short : e.text;
+        calExtra.push({ name: nm, m: e.mass0 });
+        if (e.nRed) calExtra.push({ name: nm + ' (reduced)', m: e.mass0 + 2 * 1.007825 });
+      });
+      poolCal = poolCalibration(feats, calExtra, st.calDonors);
+      if (poolCal.M) { poolCal.M.fallbackFrom = M1.reason; M1 = poolCal.M; }
+    }
+    if (M1.ok && M1.source !== 'borrowed') {
       var boot0 = M1.boot;
       M1 = S.tuneCharge(M1, feats);
       M1.boot = boot0;
     }
-    else if (lock.ok) {
+    else if (!M1.ok && lock.ok) {
       /* too few calibrants of its own: fall back on the lock-spray ion */
       var why0 = M1.reason;
       M1 = lockModel(lock); M1.fallbackFrom = why0;
@@ -5577,9 +6042,46 @@ SAC.pipeline = (function () {
       feats = feats.filter(function (F) { return !F.mergedInto; });
       feats.forEach(function (F, i) { F.id = i; });
       det.features = feats;
-      FT.relink(det.set, det.T, feats);
+      FT.relink(det.set, det.T, feats, { polarity: run.polarity, pool: profile.type === 'precursors' });
     }
-    var autoTol = function (M) { return M.source === 'lock' ? Math.min(10, Math.max(5, 4 * M.sd)) : Math.min(10, Math.max(3.5, 4 * M.sd)); };
+    /* 4b. a cytoplasmic pool: every expected ion extracted directly (see
+       FT.rescue) -- the protonated or deprotonated ions in each charge state
+       with their M+1, and the common adducts -- at the target masses and,
+       exactly alike, at the decoy masses (+-7, +-13 Da), so the FDR still
+       counts what such a search finds by chance */
+    var rescued = null;
+    if (profile.type === 'precursors') {
+      say('Extracting the expected ions', 0.53);
+      var neg = run.polarity === 'negative', tolR = M1.ok ? Math.max(8, 4 * M1.sd) : 25;
+      var ADDS = neg ? [['[M+HCOO]⁻', 46.005479], ['[M+Cl]⁻', 35.976678]] : [['[M+Na]⁺', 21.981945], ['[M+NH₄]⁺', 17.026549], ['[M+K]⁺', 37.955882]];
+      var rtMid = U.median(feats.slice(0, 200).map(function (F) { return F.rt; })) || 5;
+      var rawOf = function (m, z) { return M1.ok ? m * (1 + S.evalModel(M1, m, rtMid, z, 1e4) * 1e-6) : m; };
+      var targets = [];
+      G1.forEach(function (g) {
+        [0].concat(S.SHIFTS).forEach(function (sh) {
+          var M = g.mass + sh, tag = (sh ? 'decoy:' : '') + g.fstr, zs = [1];
+          if (M > 400) zs.push(2); if (M > 1500) zs.push(3);
+          zs.forEach(function (z) {
+            var mono = targets.length, m = (M + z * PROTON) / z;
+            targets.push({ mz: rawOf(m, z), z: z, kind: 'mono', tag: tag, ion: neg ? '[M−' + (z > 1 ? z : '') + 'H]' + (z > 1 ? z : '') + '⁻' : '[M+' + (z > 1 ? z : '') + 'H]' + (z > 1 ? z : '') + '⁺' });
+            targets.push({ mz: rawOf(m + FT.ISO_D / z, z), z: z, kind: 'iso', mono: mono, tag: tag });
+          });
+          ADDS.forEach(function (a) { targets.push({ mz: rawOf(M + PROTON + a[1], 1), z: 1, kind: 'adduct', tag: tag, ion: a[0] }); });
+        });
+      });
+      var nf = FT.rescue(det, feats, targets, { tolPpm: tolR, rt0: rtA, rt1: rtB });
+      nf.forEach(function (F) { F.massRaw = F.mass; });
+      if (M1.ok) S.applyCal(nf, M1);
+      feats = feats.concat(nf);
+      if (M1.ok) FT.mergeCharges(det.set, det.T, feats, Math.max(4, 4 * M1.sd));
+      feats = feats.filter(function (F) { return !F.mergedInto; });
+      feats.forEach(function (F, i) { F.id = i; });
+      det.features = feats;
+      FT.relink(det.set, det.T, feats, { polarity: run.polarity, pool: true });
+      rescued = { targets: targets.filter(function (t) { return t.kind !== 'iso'; }).length, tolPpm: tolR,
+                  ions: nf.filter(function (F) { return !F.mergedInto && !F.lone; }).length, adducts: nf.filter(function (F) { return F.lone; }).length };
+    }
+    var autoTol = function (M) { return M.source === 'lock' || M.source === 'metabolites' || M.source === 'borrowed' ? Math.min(10, Math.max(5, 4 * M.sd)) : Math.min(10, Math.max(3.5, 4 * M.sd)); };
     var tol = st.tol === 'auto' ? (M1.ok ? autoTol(M1) : 15) : +st.tol;
     var sigma = M1.ok ? Math.max(M1.sd, 0.6) : tol / 3;
 
@@ -5594,13 +6096,25 @@ SAC.pipeline = (function () {
     if (st.ms2 && ms2Set && ms2Mode === 'mse') {
       say('Calibrating the high-energy channel', 0.55);
       mctx = new MS.Ctx(run, det, { ppm2: st.ppm2 });
-      M2 = MS.calibrate(mctx, feats);
+      var fewCal = M1.ok && (M1.source === 'metabolites' || M1.source === 'borrowed');
+      M2 = MS.calibrate(mctx, feats, fewCal ? { lo: M1.anchorLo, hi: M1.anchorHi } : null);
+      /* few anchors: the same straight line as in the low-energy channel */
+      if (fewCal && M2.rawPts) {
+        var L2 = calibrantLine(M2.rawPts.map(function (q) { return Object.assign({ name: String(q.fid) }, q); }), 6);
+        if (L2.ok) { L2.source = 'internal'; delete L2.calibrants; M2 = L2; }
+        delete M2.rawPts;
+      }
       if (M2.ok) mctx.model = M2;
       var ppm2 = M2.ok ? Math.min(25, Math.max(8, 4 * M2.sd)) : 60;
+      /* a pool's fragments are weak (a few thousand counts), and weak
+         centroids scatter by 15-30 ppm scan to scan: a tight window breaks
+         their elution profile apart. The shifted controls measure the chance
+         level at the same width. */
+      if (fewCal || profile.type === 'precursors') { ppm2 = Math.max(ppm2, 20); mctx.opt.smooth = true; }
       mctx.opt.ppm2 = ppm2;
       say('Checking fragments of every feature', 0.6);
       feats.forEach(function (F) {
-        if (F.lone || F.parent || F.nIso < st.minIso) return;
+        if (F.lone || F.parent || (F.nIso < st.minIso && !F.monoOnly)) return;
         F.gen = MS.generic(mctx, F);
       });
     }
@@ -5609,7 +6123,13 @@ SAC.pipeline = (function () {
     /* generic MS/MS evidence joins the score as a property of the feature, so a
        target and a decoy match to the same feature receive it alike */
     var ctx = { sigma: sigma, tol: tol, fdr: st.fdr, minIso: st.minIso,
-                featureLL: function (F) { return F.gen ? F.gen.ll : 0; } };
+                featureLL: function (F) {
+                  var v = F.gen ? F.gen.ll : 0;
+                  /* in a pool, adduct ions co-eluting with a feature are evidence
+                     of its own (a target and a decoy match to it get it alike) */
+                  if (profile.type === 'precursors') v += 0.4 * Math.min(2, (F.satellites || []).filter(function (x) { return x.relKind === 'adduct'; }).length);
+                  return v;
+                } };
     function recal(rows, wide) {
       if (!M1.ok) return;
       var pts = S.anchorsFromRows(rows, Math.max(st.fdr, 0.01));
@@ -5659,8 +6179,12 @@ SAC.pipeline = (function () {
           m.units.forEach(function (ui) { unitW[ui] = (unitW[ui] || 0) + r.F.area / g.members.slice(0, 3).length; });
         });
       });
+      /* higher oligomers from the chemistry's defining units: each minor
+         variant (a partner without its disaccharide, a de-N-acetylated GlcNAc)
+         would multiply the trimers and tetramers, and their decoys, many times
+         over for a few hundredths of a percent */
       var ranked = Object.keys(unitW).map(Number).filter(function (ui) {
-        var u = sp1.units[ui]; return u.len >= 3;
+        var u = sp1.units[ui]; return u.len >= 3 && !u.minor;
       }).sort(function (a, b) { return unitW[b] - unitW[a]; });
       /* 7. stage 2: higher oligomers from what was seen */
       G = G1;
@@ -5972,8 +6496,11 @@ SAC.pipeline = (function () {
     /* does the chemistry fit? Most of what fragments like a muropeptide
        should be explained; if not, the organism may make chemistry none of
        the libraries describe */
+    var precOnly = profile.type === 'precursors';
     function fitVerdict() {
       var pct = muroLike ? idMuroLike / muroLike * 100 : null, out = { muroLikePct: pct, warn: false, close: null, notes: [] };
+      /* a cytoplasmic pool holds no sacculus muropeptides to explain */
+      if (precOnly) return { muroLikePct: null, warn: false, close: null, notes: [] };
       if (pct !== null && pct < 60 && muroLike > 0.02 * totalArea) {
         out.warn = true;
         out.notes.push('Only ' + Math.round(pct) + '% of the signal that fragments like a muropeptide is explained by ' + (profile.short || profile.name || 'this chemistry') +
@@ -5988,6 +6515,26 @@ SAC.pipeline = (function () {
       }
       return out;
     }
+    /* A run searched for sacculus muropeptides that finds little may be a
+       cytoplasmic (soluble) extract: look for the nucleotide and lipid-linked
+       precursors of the matching pool among what is left unexplained. */
+    function poolHint() {
+      if (precOnly || rows.length >= 5 && !(muroLike && idMuroLike / muroLike < 0.6)) return null;
+      var lys = (profile.stem || [])[2] && profile.stem[2].some(function (r) { return /^K/.test(r); });
+      var pid = lys ? 'cytoLys' : 'cytoDap', P = L.PROFILES[pid], tol = Math.max(ctx.tol || 10, 10), hits = [];
+      L.precursorStructures(P).filter(function (t) { return /UDP|PPL/.test(t); }).forEach(function (t) {
+        var e; try { e = L.extraEntry(t); } catch (x) { return; }
+        var m = e.mass0;
+        feats.forEach(function (F) {
+          if (F.parent || F.idRow || Math.abs(F.mass - m) / m * 1e6 > tol) return;
+          hits.push({ text: t, short: e.short, mass: m, rt: F.rt, ppm: (F.mass - m) / m * 1e6, pct: F.area / (totalArea || 1) * 100,
+                      nuc: !!(F.gen && F.gen.nuc) });
+        });
+      });
+      hits.sort(function (a, b) { return (b.nuc - a.nuc) || (b.pct - a.pct); });
+      var strong = hits.filter(function (x) { return x.nuc; }).length >= 1 || hits.length >= 2;
+      return strong ? { pool: pid, name: P.short, hits: hits.slice(0, 5) } : null;
+    }
     var res = {
       settings: st, profileId: chosen, profile: profile, ranking: ranking.map(function (r) {
         return { id: r.id, name: names[r.id] || r.id, net: r.net || 0, explained: r.explained || 0, decoy: r.decoy || 0, n: r.n || 0, cal: r.model && r.model.ok,
@@ -5999,16 +6546,17 @@ SAC.pipeline = (function () {
       refs: { n: refRows.length, source: SAC.curated ? SAC.curated.VERSION : '' },
       polarity: run.polarity || 'positive', polarityForced: !!run.polarityForced, lock: lock, customBlocks: C.customList(),
       customErrors: reg.errors, chosenLibrary: chosenLib ? chosenLib.id : null, libraryType: profile.type || 'mature',
-      precursors: SAC.metrics.precursors ? SAC.metrics.precursors(rows) : null, ms2Mode: ms2Mode, ms2Used: !!mctx,
+      precursors: SAC.metrics.precursors ? SAC.metrics.precursors(rows, precOnly) : null, poolHint: poolHint(), ms2Mode: ms2Mode, ms2Used: !!mctx,
       rows: rows, unidentified: unident,
-      cal1: calSummary(M1), cal2: M2 ? calSummary(M2) : null, calBoot: calBoot, tol: ctx.tol, sigma: ctx.sigma,
+      cal1: calSummary(M1), cal2: M2 ? calSummary(M2) : null, calBoot: calBoot, poolCal: poolCal, rescued: rescued, tol: ctx.tol, sigma: ctx.sigma,
       fdr: { threshold: R.threshold, kept: R.kept, nTarget: R.nTarget, nDecoy: R.nDecoy,
              curve: R.curve.filter(function (c, i) { return i % Math.max(1, Math.floor(R.curve.length / 300)) === 0; }),
              decoyScores: R.decoyScores.slice(0, 2000), targetScores: R.rows.map(function (r) { return r.score; }).slice(0, 4000) },
       space: { units: sp1.units.length, stage1: G1.length, groups: G.length, oligomers: nOlig },
       stats: Object.assign({}, det.stats, { merged: nMerged }), totalArea: totalArea, idArea: idArea, assignedPct: idArea / (totalArea || 1) * 100,
-      muroLikeArea: muroLike, muroLikePct: muroLike ? idMuroLike / muroLike * 100 : null,
-      metrics: metrics, metricsUV: metricsUV, metricsRev: 2,
+      muroLikeArea: muroLike, muroLikePct: muroLike && !precOnly ? idMuroLike / muroLike * 100 : null,
+      /* cross-linkage and the other sacculus metrics mean nothing for a pool */
+      metrics: precOnly ? null : metrics, metricsUV: precOnly ? null : metricsUV, metricsRev: 2,
       fit: fitVerdict(),
       uv: uvRes ? uvSummary(uvRes) : null,
       traces: SAC.evidence.traces(run, det, uvRes),
@@ -6036,8 +6584,9 @@ SAC.pipeline = (function () {
       ppm: h.ppm, score: r.score, q: r.q, ll: h.ll, iso: h.iso, rt: F.rt, rtL: F.rtL, rtR: F.rtR, fwhm: F.fwhm,
       charges: F.charges.slice(), area: F.area, height: F.height, sn: F.sn, nIso: F.nIso,
       zSpread: F.zSpreadPpm, saturated: F.envs.filter(function (e) { return e.sat || e.satRisk; }).map(function (e) { return e.z; }),
-      gen: F.gen ? { oxo: !!F.gen.oxo, y: !!F.gen.y, oxoR: F.gen.oxo ? F.gen.oxo.r : null, yR: F.gen.y ? F.gen.y.r : null } : null,
+      gen: F.gen ? { oxo: !!F.gen.oxo, y: !!F.gen.y, oxoR: F.gen.oxo ? F.gen.oxo.r : null, yR: F.gen.y ? F.gen.y.r : null, nuc: !!F.gen.nuc } : null,
       satellites: (F.satellites || []).map(function (s) { return { rel: s.relation, mass: s.mass, area: s.area }; }),
+      rescued: !!F.rescued, monoOnly: !!F.monoOnly,
       k: best.k, kind: best.kind, cls: best.cls, nAnh: best.nAnh, nStem: best.nStem, links: best.links || [],
       linkSure: best.linkSure,
       nIsomers: g.members.length, isomers: iso, alts: alts,
@@ -6450,7 +6999,8 @@ SAC.pipeline = (function () {
     var o = { ok: !!M.ok, reason: M.reason || '', sd: M.sd, rmsBefore: M.rmsBefore, rmsAfter: M.rmsAfter, nMol: M.nMol, nIons: M.nIons,
               n0: M.n0, kind: M.kind, terms: M.terms || [], comps: M.comps || null, useRt: M.useRt, mzLo: M.mzLo, mzHi: M.mzHi,
               coef: M.coef, crt: M.crt, rt0: M.rt0, rtLo: M.rtLo, rtHi: M.rtHi, chargeTune: M.chargeTune || null,
-              source: M.source || 'internal', fallbackFrom: M.fallbackFrom || null };
+              source: M.source || 'internal', fallbackFrom: M.fallbackFrom || null,
+              borrowedFrom: M.borrowedFrom || null, offset: M.offset === undefined ? null : M.offset, calibrants: M.calibrants || null };
     if (M.points) o.points = M.points.map(function (p) { return [p.mz, p.err, p.after, p.rt, p.z || 0, p.mass || 0]; });
     return o;
   }
@@ -6572,7 +7122,7 @@ SAC.metrics = (function () {
     if (!totMol) return null;
     var units = muro.map(function (r, i) { return mol[i] * Math.max(1, r.nStem); });
     var totU = units.reduce(function (s, v) { return s + v; }, 0);
-    var m = { source: src, n: muro.length, byK: {}, byKUnits: {}, xlink: 0, xlink43: 0, xlink33: 0, xlink13: 0, xlinkOther: 0, xlinkOpen: 0, mol13: 0, anhUnits: 0,
+    var m = { source: src, n: muro.length, byK: {}, byKUnits: {}, xlink: 0, xlinkG: 0, xlink43: 0, xlink33: 0, xlink13: 0, xlinkOther: 0, xlinkOpen: 0, mol13: 0, anhUnits: 0,
               chainLength: null, tri: 0, tetra: 0, penta: 0, other: 0, bridged: 0, deac: 0, oac: 0, amid: 0, lpp: 0, gly: 0, stems: 0 };
     muro.forEach(function (r, i) {
       var k = r.nStem, fm = mol[i] / totMol * 100, fu = units[i] / totU * 100;
@@ -6583,6 +7133,11 @@ SAC.metrics = (function () {
       var links = Math.max(0, k - 1);
       var contrib = units[i] / totU * (links / Math.max(1, k)) * 100;
       m.xlink += contrib;
+      /* 1/2 dimers + 2/3 trimers + 3/4 tetramers applied to the molar % of
+         muropeptides (each muropeptide counted once), as some studies apply
+         it to their abundance tables. Applied to % of units instead
+         (classical UV peak areas) the same formula gives xlink above. */
+      m.xlinkG += fm * links / Math.max(1, k);
       if (links) {
         var ls = r.links || [];
         /* each link of a resolved arrangement takes its share, whatever its
@@ -6611,15 +7166,20 @@ SAC.metrics = (function () {
   }
   /* The precursor pool: shares of the identified precursor signal by kind
      and by stem length, when a precursor library was searched. */
-  function precursors(rows) {
-    var pr = rows.filter(function (r) { return r.cls === 'precursor' || r.cls === 'recycling'; });
+  function precursors(rows, all) {
+    /* a pool search (all) counts every species it found; a search beside the
+       mature muropeptides only its precursors and recycling products */
+    var pr = rows.filter(function (r) { return all || r.cls === 'precursor' || r.cls === 'recycling'; });
     if (!pr.length) return null;
     var tot = pr.reduce(function (s, r) { return s + r.area; }, 0) || 1, by = {}, len = {};
     pr.forEach(function (r) {
       var t = r.name || '', k;
       if (/UDP/.test(t)) k = /-[A-Z{]/.test(t) ? 'UDP-MurNAc-peptides' : 'UDP-sugars';
       else if (/PPL/.test(t)) k = /^gm\(PPL|^g[^~=]*m\(PPL/.test(t) ? 'Lipid II' : 'Lipid I';
-      else k = 'Recycling products';
+      else if (/Anh/.test(t)) k = 'Recycling: anhydro-MurNAc products';
+      else if (/\((?:[^)]*,)?P(?:,[^)]*)?\)/.test(t)) k = 'Recycling: sugar phosphates';
+      else if (r.cls === 'peptide-only' || !/^[gm]/.test(t)) k = 'Free peptides';
+      else k = 'Other';
       by[k] = (by[k] || 0) + r.area / tot * 100;
       var u = (r.unitInfo || [])[0];
       if (u && u.len && /UDP|PPL/.test(t)) len[u.len] = (len[u.len] || 0) + r.area / tot * 100;
@@ -19951,6 +20511,26 @@ var UI = (function () {
 
   /* ---------- toast ---------- */
   var toastEl = null, toastT = 0;
+  /* a small modal question with buttons; resolves with the chosen value
+     (null when dismissed with Escape, the backdrop or Cancel) */
+  function choose(o) {
+    return new Promise(function (res) {
+      var prev = document.activeElement, back, done = function (v) { document.removeEventListener('keydown', key, true); back.remove(); if (prev && prev.focus) prev.focus(); res(v); };
+      var key = function (e) { if (e.key === 'Escape') { e.preventDefault(); done(null); } };
+      var btns = (o.options || []).map(function (op) {
+        return hh('button', { class: 'btn' + (op.primary ? ' primary' : ''), onclick: function () { done(op.value); } }, op.label);
+      });
+      btns.unshift(hh('button', { class: 'btn ghost', onclick: function () { done(null); } }, o.cancel || 'Cancel'));
+      var box = hh('div', { class: 'choice', role: 'dialog', 'aria-modal': 'true', 'aria-label': o.title || 'Question' },
+        o.title ? hh('h3', null, o.title) : null, o.text ? hh('p', null, o.text) : null, o.note ? hh('p', { class: 'small muted' }, o.note) : null,
+        hh('div', { class: 'row' }, btns));
+      back = hh('div', { class: 'choice-back', onclick: function (e) { if (e.target === back) done(null); } }, box);
+      document.body.appendChild(back);
+      document.addEventListener('keydown', key, true);
+      var pr = btns.filter(function (b) { return /primary/.test(b.className); })[0] || btns[btns.length - 1];
+      setTimeout(function () { pr.focus(); }, 0);
+    });
+  }
   function toast(msg, ms) {
     if (!toastEl) { toastEl = hh('div', { class: 'toast', role: 'status', 'aria-live': 'polite' }); document.body.appendChild(toastEl); }
     toastEl.textContent = msg;
@@ -20045,7 +20625,7 @@ var UI = (function () {
   }
 
   return { h: hh, s: s, clear: clear, $: $, $$: $$, fx: fx, signed: signed, pct: pct, big: big, sci: sci, sup: sup, bytes: bytes, secs: secs,
-           esc: esc, plural: plural, toast: toast, saveFile: saveFile, copyText: copyText, store: store, debounce: debounce, css: css, icon: icon,
+           esc: esc, plural: plural, toast: toast, choose: choose, saveFile: saveFile, copyText: copyText, store: store, debounce: debounce, css: css, icon: icon,
            inViewer: inViewer, downloads: downloads };
 })();
 
@@ -20572,13 +21152,31 @@ UI.plot = (function () {
   Chrom.prototype.bind = function () {
     var me = this, cv = this.cv, down = null;
     function pos(e) { var r = cv.getBoundingClientRect(); return { x: e.clientX - r.left, y: e.clientY - r.top }; }
+    /* dragging moves the run left and right under the pointer (once zoomed
+       in); Shift+drag draws a stretch to zoom to; a click picks a peak */
+    function zoomed() { return me.view && me.full && (me.view[1] - me.view[0]) < (me.full[1] - me.full[0]) - 1e-6; }
+    function cursor() { cv.style.cursor = down && down.panned ? 'grabbing' : (zoomed() ? 'grab' : ''); }
     cv.addEventListener('pointerdown', function (e) {
-      var p = pos(e); down = p; me.sel = null;
+      if (e.button !== undefined && e.button !== 0) return;
+      var p = pos(e); down = { x: p.x, y: p.y, view: me.view ? me.view.slice() : null, box: e.shiftKey || !zoomed(), panned: false }; me.sel = null;
       try { cv.setPointerCapture(e.pointerId); } catch (er) { /* fine */ }
     });
     cv.addEventListener('pointermove', function (e) {
       var g = me.g || me.geom(), p = pos(e);
-      if (down && Math.abs(p.x - down.x) > 4) { me.sel = [down.x, p.x]; me.draw(); }
+      if (down && Math.abs(p.x - down.x) > 4) {
+        if (down.box) { me.sel = [down.x, p.x]; me.draw(); }
+        else if (down.view) {
+          /* the time under the pointer when it went down stays under it */
+          var span = down.view[1] - down.view[0], dt = (p.x - down.x) / Math.max(1, g.w - g.l - g.r) * span;
+          var a = down.view[0] - dt, f = me.full;
+          if (a < f[0]) a = f[0];
+          if (a + span > f[1]) a = f[1] - span;
+          down.panned = true; me.tip.hidden = true; cursor();
+          me.setView(a, a + span);
+          return;
+        }
+      }
+      if (!down) cursor();
       var x = me.pxToX(p.x, g);
       if (p.x < g.l || p.x > g.w - g.r) { me.tip.hidden = true; return; }
       var k = me.nearestMarker(p.x, g);
@@ -20595,14 +21193,16 @@ UI.plot = (function () {
       var g = me.g || me.geom(), p = pos(e);
       if (down && me.sel && Math.abs(me.sel[1] - me.sel[0]) > 6) {
         var a = me.pxToX(Math.min(me.sel[0], me.sel[1]), g), b = me.pxToX(Math.max(me.sel[0], me.sel[1]), g);
-        me.sel = null; down = null; me.setView(a, b); return;
+        me.sel = null; down = null; me.setView(a, b); cursor(); return;
       }
-      me.sel = null; down = null;
+      if (down && down.panned) { down = null; cursor(); return; }
+      me.sel = null; down = null; cursor();
       var k = me.nearestMarker(p.x, g);
       if (k && me.opt.onPick) me.opt.onPick(k);
       me.draw();
     });
-    cv.addEventListener('dblclick', function () { me.reset(); });
+    cv.addEventListener('pointercancel', function () { down = null; me.sel = null; cursor(); me.draw(); });
+    cv.addEventListener('dblclick', function () { me.reset(); cursor(); });
     /* the wheel zooms about the pointer; Shift (or a sideways swipe) pans */
     cv.addEventListener('wheel', function (e) {
       var g = me.g || me.geom(), p = pos(e);
@@ -20621,6 +21221,7 @@ UI.plot = (function () {
       if (a < full[0]) { b += full[0] - a; a = full[0]; }
       if (b > full[1]) { a -= b - full[1]; b = full[1]; }
       me.setView(Math.max(full[0], a), b);
+      cursor();
     }, { passive: false });
   };
 
@@ -21220,11 +21821,39 @@ var APP = (function () {
       A.emit('progress', run);
     } else if (m.type === 'result') {
       run.status = 'done'; run.result = prepare(m.result); run.hasRaw = true; run.elapsed = Date.now() - run.t0;
-      busy = null; A.emit('runs'); next();
+      busy = null; batchStep(false);
+      /* asked to be analysed again (new settings for all runs) while it was running */
+      if (run.requeue) { run.requeue = false; reanalyse(run, true); }
+      A.emit('runs'); next();
     } else if (m.type === 'error') {
       if (m.q && pending[m.q]) { var cb2 = pending[m.q]; delete pending[m.q]; cb2({ error: m.message }); return; }
-      run.status = 'error'; run.error = m.message; busy = null; A.emit('runs'); next();
+      run.status = 'error'; run.error = m.message; busy = null; batchStep(true); A.emit('runs'); next();
     }
+  }
+  /* A batch: the runs queued together, or added while others were still
+     waiting. Its progress (runs finished of the total, time taken, time
+     left) is shown at the foot of the runs panel. */
+  A.batch = null;
+  function batchAdd(n) {
+    if (!n) return;
+    var B = A.batch;
+    if (!B || B.end) A.batch = B = { total: 0, done: 0, failed: 0, t0: Date.now(), end: null };
+    B.total += n;
+    A.emit('batch');
+  }
+  function batchStep(failed) {
+    var B = A.batch;
+    if (!B || B.end) return;
+    B.done++; if (failed) B.failed++;
+    if (B.done >= B.total) B.end = Date.now();
+    A.emit('batch');
+  }
+  function batchDrop(n) {
+    var B = A.batch;
+    if (!B || B.end || !n) return;
+    B.total = Math.max(B.done, B.total - n);
+    if (B.done >= B.total) B.end = Date.now();
+    A.emit('batch');
   }
   function next() {
     if (busy || !queue.length) return;
@@ -21233,8 +21862,24 @@ var APP = (function () {
     A.emit('runs');
     var ready = workerOK === null ? startWorker() : Promise.resolve(workerOK);
     ready.then(function () {
-      send({ type: 'analyze', id: run.id, file: run.file, settings: engineSettings(run.settings) });
+      send({ type: 'analyze', id: run.id, file: run.file, settings: withDonors(engineSettings(run.settings), run) });
     });
+  }
+  /* a pool search may borrow the m/z curve of a sacculus run of this session
+     (the engine re-levels it on the pool's own calibrants and keeps it only
+     if they agree) */
+  function withDonors(st, run) {
+    var pool = st.profile === 'custom' ? (st.customProfile && st.customProfile.type === 'precursors') :
+      !!(SAC.library.PROFILES[st.profile] && SAC.library.PROFILES[st.profile].type === 'precursors');
+    if (!pool) return st;
+    st.calDonors = A.runs.filter(function (r) {
+      var c = r.result && r.result.cal1;
+      return r !== run && c && c.ok && (c.source || 'internal') === 'internal' && r.result.libraryType !== 'precursors';
+    }).slice(-4).map(function (r) {
+      var c = Object.assign({}, r.result.cal1); delete c.points;
+      return { name: r.name, cal: c };
+    });
+    return st;
   }
   function query(run, q) {
     return new Promise(function (resolve) {
@@ -21274,25 +21919,42 @@ var APP = (function () {
                   settings: Object.assign({}, A.settings) };
       A.runs.push(run); queue.push(run); added++;
     });
+    batchAdd(added);
     if (added) {
       A.current = A.runs[A.runs.length - added].id;
       if (A.view !== 'analyse') show('analyse');
       A.emit('runs'); next();
     }
   }
-  function reanalyse(run) {
-    if (!run || !run.file) return;
-    if (busy === run) { UI.toast('This run is being analysed already.'); return; }
+  function reanalyse(run, keepCurrent) {
+    if (!run || !run.file) return false;
+    if (busy === run) { if (!keepCurrent) UI.toast('This run is being analysed already.'); return false; }
     if (run.status === 'done' && run.hasRaw) send({ type: 'release', id: run.id });
+    var wasQueued = queue.indexOf(run) >= 0;
     queue = queue.filter(function (r) { return r !== run; });
     run.settings = Object.assign({}, A.settings); run.status = 'queued'; run.result = null; run.error = null; run.hasRaw = false;
-    A.current = run.id;
-    queue.push(run); A.emit('runs'); next();
+    if (!keepCurrent) A.current = run.id;
+    queue.push(run);
+    if (!wasQueued) batchAdd(1);
+    if (!keepCurrent) { A.emit('runs'); next(); }
+    return true;
+  }
+  /* every run that still has its mzML, with the settings in force now; the
+     run on show stays on show and goes first */
+  function reanalyseAll(first) {
+    var list = A.runs.filter(function (r) { return r.file && r !== busy; });
+    if (busy && busy.file) busy.requeue = true;
+    if (first && list.indexOf(first) > 0) { list.splice(list.indexOf(first), 1); list.unshift(first); }
+    var n = 0;
+    list.forEach(function (r) { if (reanalyse(r, true)) n++; });
+    A.emit('runs'); next();
+    return n;
   }
   function remove(id) {
     var run = byId(id);
     if (!run) return;
     if (busy === run) { UI.toast('This run is being analysed; it can be removed when it finishes.'); return; }
+    if (queue.indexOf(run) >= 0) batchDrop(1);
     queue = queue.filter(function (r) { return r !== run; });
     if (run.hasRaw) send({ type: 'release', id: id });
     A.runs = A.runs.filter(function (r) { return r !== run; });
@@ -21338,7 +22000,7 @@ var APP = (function () {
     res.rows.forEach(function (r, i) { r.idx = i; });
     /* results saved before the metrics knew every link type (1-3 and others)
        get them recomputed from their own species */
-    if (res.metrics && (res.metrics.xlink13 === undefined || !res.metricsRev) && SAC.metrics) {
+    if (res.metrics && (res.metrics.xlink13 === undefined || res.metrics.xlinkG === undefined || !res.metricsRev) && SAC.metrics) {
       try {
         /* and results saved before an MS/MS isomer call carried the called
            structure's class and links (a glycan-chain dimer was counted as a
@@ -21573,7 +22235,8 @@ var APP = (function () {
      and the user's libraries */
   function profileOptions() {
     var L = SAC.library;
-    var o = [['auto', 'Automatic (built-in chemistries)']].concat(L.PROFILE_ORDER.map(function (k) { return [k, L.PROFILES[k].short]; }));
+    var o = [['auto', 'Automatic (built-in chemistries)']].concat(L.PROFILE_ORDER.map(function (k) { return [k, L.PROFILES[k].short]; }))
+      .concat(L.POOL_ORDER.map(function (k) { return [k, L.PROFILES[k].short]; }));
     A.libraries.forEach(function (lib) { o.push(['lib:' + lib.id, 'My library: ' + lib.name]); });
     return o;
   }
@@ -21594,10 +22257,25 @@ var APP = (function () {
     if (t === 'auto') { if (themeHost) root.setAttribute('data-theme', themeHost); else root.removeAttribute('data-theme'); }
     else root.setAttribute('data-theme', t);
     UI.store.set('theme', t);
-    UI.$$('.theme button').forEach(function (b) { b.setAttribute('aria-pressed', b.dataset.t === t ? 'true' : 'false'); });
+    syncThemeButton();
     A.emit('theme');
   }
-  try { window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', function () { A.emit('theme'); }); } catch (e) { /* old browser */ }
+  /* the theme on screen now, whatever chose it */
+  function shownTheme() {
+    var a = document.documentElement.getAttribute('data-theme');
+    if (a === 'dark' || a === 'light') return a;
+    try { return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'; } catch (e) { return 'light'; }
+  }
+  /* one button: it shows the theme it switches to */
+  function syncThemeButton() {
+    var dark = shownTheme() === 'dark';
+    UI.$$('.theme button').forEach(function (b) {
+      UI.clear(b).appendChild(UI.icon(dark ? 'sun' : 'moon'));
+      b.title = dark ? 'Switch to the light theme' : 'Switch to the dark theme';
+      b.setAttribute('aria-label', b.title);
+    });
+  }
+  try { window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', function () { syncThemeButton(); A.emit('theme'); }); } catch (e) { /* old browser */ }
 
   /* ---------------- events ---------------- */
   var handlers = {};
@@ -21625,10 +22303,8 @@ var APP = (function () {
         return h('button', { role: 'tab', 'aria-selected': 'false', 'data-view': v, onclick: function () { show(v); } }, LABELS[v]);
       }));
     var fileIn = h('input', { type: 'file', accept: '.json,.gz,application/json,application/gzip', multiple: true, hidden: true, onchange: function () { addFiles(fileIn.files); fileIn.value = ''; } });
-    var theme = h('div', { class: 'theme', role: 'group', 'aria-label': 'Colour theme' },
-      [['auto', 'auto', 'Follow the system'], ['light', 'sun', 'Light'], ['dark', 'moon', 'Dark']].map(function (o) {
-        return h('button', { 'data-t': o[0], 'aria-pressed': A.theme === o[0] ? 'true' : 'false', title: o[2], 'aria-label': o[2] + ' theme', onclick: function () { applyTheme(o[0]); } }, UI.icon(o[1]));
-      }));
+    var theme = h('div', { class: 'theme' },
+      h('button', { onclick: function () { applyTheme(shownTheme() === 'dark' ? 'light' : 'dark'); } }));
     root.appendChild(h('header', { class: 'top' },
       h('div', { class: 'top-in' },
         h('a', { class: 'brand', href: '#home', title: 'Home (your runs stay open)', onclick: function (e) { e.preventDefault(); show('home'); } }, logo(),
@@ -21665,7 +22341,7 @@ var APP = (function () {
     show(VIEWS.indexOf(hv) >= 0 && hv !== 'analyse' && hv !== 'compare' ? hv : 'home');
   }
 
-  A.addFiles = addFiles; A.reanalyse = reanalyse; A.remove = remove; A.byId = byId; A.query = query; A.settingsChanged = settingsChanged;
+  A.addFiles = addFiles; A.reanalyse = reanalyse; A.reanalyseAll = reanalyseAll; A.isBusy = function (r) { return busy === r; }; A.remove = remove; A.byId = byId; A.query = query; A.settingsChanged = settingsChanged;
   A.saveAnalysis = saveAnalysis; A.saveSession = saveSession; A.loadExample = loadExample; A.show = show; A.boot = boot; A.addResult = addResult; A.openAnalysis = openAnalysis;
   A.logo = logo; A.wordmark = wordmark; A.applyTheme = applyTheme;
   A.getLibrary = getLibrary; A.saveLibrary = saveLibrary; A.deleteLibrary = deleteLibrary; A.libraryProfile = libraryProfile; A.normLib = normLib;
@@ -21712,6 +22388,8 @@ APP.views.analyse = (function () {
     applySizes();
     A.on('runs', render);
     A.on('progress', progress);
+    A.on('batch', renderBatch);
+    A.on('progress', renderBatch);
     A.on('settings', function () { syncSettings(); renderRailFoot(); renderInfo(); });
     A.on('libraries', function () { if (rail) renderRail(); });
     A.on('theme', function () { if (chrom) chrom.draw(); });
@@ -21787,6 +22465,8 @@ APP.views.analyse = (function () {
     if (key !== mainKey || !mainArea.firstChild) { mainKey = key; renderMain(); }
   }
   function renderRail() {
+    /* a run finishing re-renders the panel: keep the place the list was scrolled to */
+    var oldBody = rail.querySelector('.ws-rail-body'), keepTop = oldBody ? oldBody.scrollTop : 0;
     UI.clear(rail);
     var fileIn = h('input', { type: 'file', accept: '.mzML,.mzml,.json,.gz', multiple: true, hidden: true,
                               onchange: function () { A.addFiles(fileIn.files); fileIn.value = ''; } });
@@ -21805,23 +22485,63 @@ APP.views.analyse = (function () {
           h('button', { class: 'btn sm ghost', onclick: A.loadExample }, 'Open the example')),
       settingsCard()));
     rail.appendChild(h('div', { class: 'ws-rail-foot', id: 'rail-foot' }));
+    var newBody = rail.querySelector('.ws-rail-body');
+    if (newBody && keepTop) newBody.scrollTop = keepTop;
     renderRailFoot();
   }
   function renderRailFoot() {
     var foot = document.getElementById('rail-foot');
     if (!foot) return;
     UI.clear(foot);
+    foot.appendChild(h('div', { id: 'batch-box', class: 'batch', hidden: true }));
+    renderBatch();
     var run = A.currentRun(), can = !!(run && run.file && run.status !== 'reading' && run.status !== 'analysing');
     var changed = can && run.status === 'done' && A.settingsChanged(run);
     var edits = run && run.result ? A.libraryEdits(run) : [];
     if (edits.length) foot.appendChild(h('div', { class: 'changed' }, 'The library this run was searched with has been edited since (' + edits.join('; ') + '). ' +
       (run.file ? 'Re-analyse to apply the edits.' : 'The results shown are from the library as it was then; add the mzML again to re-analyse.')));
     else if (changed) foot.appendChild(h('div', { class: 'changed' }, 'Settings differ from the ones this run was analysed with.'));
-    foot.appendChild(h('button', { class: 'btn' + (changed ? ' primary' : ''), disabled: !can, onclick: function () { A.reanalyse(run); },
-      title: can ? 'Analyse ' + run.name + ' again with the settings above' : (run && !run.file ? 'Add this run’s mzML again to re-analyse it' : 'Open a run first') },
+    var nFiles = A.runs.filter(function (r) { return r.file; }).length;
+    can = !!(run && run.file) && (can || nFiles > 1);
+    foot.appendChild(h('button', { class: 'btn' + (changed ? ' primary' : ''), disabled: !can, onclick: function () { askReanalyse(run); },
+      title: can ? 'Analyse ' + run.name + (nFiles > 1 ? ', or every run in the list,' : '') + ' again with the settings above' : (run && !run.file ? 'Add this run’s mzML again to re-analyse it' : 'Open a run first') },
       UI.icon('reanalyse'), 'Re-analyse with these settings'));
     foot.appendChild(h('div', { class: 'tiny muted', style: { overflow: 'hidden', 'text-overflow': 'ellipsis', 'white-space': 'nowrap' } },
       run ? (run.file ? 'Current run: ' + run.name : run.name + ' has no mzML attached') : 'No run selected'));
+  }
+  /* the settings apply to this run, or to every run that still has its mzML */
+  function askReanalyse(run) {
+    var withFile = A.runs.filter(function (r) { return r.file; }), noFile = A.runs.length - withFile.length;
+    if (withFile.length < 2) { A.reanalyse(run); return; }
+    var busyRun = A.runs.filter(function (r) { return A.isBusy(r); })[0];
+    UI.choose({ title: 'Re-analyse with these settings',
+      text: 'Apply the settings to ' + run.name + ' only, or to all ' + withFile.length + ' runs in the list?',
+      note: (busyRun ? busyRun.name + ' is being analysed now; it finishes first and, for all runs, is then analysed again. ' : '') +
+            (noFile ? UI.plural(noFile, 'run') + ' opened from a saved file ' + (noFile === 1 ? 'has' : 'have') + ' no mzML attached and ' + (noFile === 1 ? 'is' : 'are') + ' left as ' + (noFile === 1 ? 'it is' : 'they are') + '.' : ''),
+      options: [{ label: 'This run', value: 'one' }, { label: 'All ' + withFile.length + ' runs', value: 'all', primary: true }] })
+      .then(function (v) {
+        if (v === 'one') A.reanalyse(run);
+        else if (v === 'all') { var n = A.reanalyseAll(run); UI.toast(UI.plural(n, 'run') + ' queued with the new settings.'); }
+      });
+  }
+  /* progress of a batch of runs, at the foot of the panel */
+  var batchTimer = null;
+  function mmss(ms) { var s = Math.max(0, Math.round(ms / 1000)), m = Math.floor(s / 60); s -= 60 * m; return m + ':' + (s < 10 ? '0' : '') + s; }
+  function renderBatch() {
+    var box = document.getElementById('batch-box'), B = A.batch;
+    if (!box) return;
+    if (!B || B.total < 2) { box.hidden = true; return; }
+    box.hidden = false; UI.clear(box);
+    var cur = A.runs.filter(function (r) { return r.status === 'reading' || r.status === 'analysing'; })[0];
+    var frac = B.end ? 1 : Math.min(1, (B.done + (cur ? cur.frac || 0 : 0)) / B.total);
+    var now = B.end || Date.now(), el = now - B.t0;
+    var left = !B.end && B.done >= 1 ? el / (B.done + (cur ? cur.frac || 0 : 0)) * (B.total - B.done - (cur ? cur.frac || 0 : 0)) : null;
+    box.appendChild(h('div', null, B.end ? h('b', null, 'All ' + B.total + ' runs analysed') : [h('b', null, 'Analysing ' + Math.min(B.total, B.done + 1) + ' of ' + B.total), ' · ' + B.done + ' done'],
+      B.failed ? h('span', { class: 'muted' }, ' · ' + B.failed + ' failed') : null));
+    box.appendChild(h('div', { class: 'bar', role: 'progressbar', 'aria-valuemin': '0', 'aria-valuemax': String(B.total), 'aria-valuenow': String(B.done),
+      'aria-label': 'Runs analysed' }, h('i', { style: { width: Math.round(frac * 100) + '%' } })));
+    box.appendChild(h('div', { class: 'muted' }, (B.end ? 'Took ' : 'Elapsed ') + mmss(el) + (left !== null ? ' · about ' + mmss(left) + ' left' : '')));
+    if (!B.end && !batchTimer) batchTimer = setInterval(function () { if (!A.batch || A.batch.end) { clearInterval(batchTimer); batchTimer = null; } renderBatch(); }, 1000);
   }
   function runItem(run) {
     var meta = '', active = run.status === 'reading' || run.status === 'analysing';
@@ -21830,7 +22550,7 @@ APP.views.analyse = (function () {
     else if (run.status === 'error') meta = 'Failed: ' + run.error;
     else if (run.result) {
       var R = run.result;
-      meta = R.rows.length + ' species · ' + UI.pct(R.muroLikePct === null ? R.assignedPct : R.muroLikePct, 0) + '% of muropeptide signal' +
+      meta = R.rows.length + ' species · ' + UI.pct(R.muroLikePct === null ? R.assignedPct : R.muroLikePct, 0) + (R.libraryType === 'precursors' || R.muroLikePct === null ? '% of MS signal' : '% of muropeptide signal') +
              (run.source === 'example' ? ' · example' : run.source === 'saved' ? ' · saved' : '');
     }
     return h('div', { class: 'run', 'aria-current': A.current === run.id ? 'true' : 'false', 'data-run': run.id,
@@ -21905,6 +22625,8 @@ APP.views.analyse = (function () {
       R.polarity === 'negative' ? h('span', { class: 'chip', title: 'Negative ions: analysed on the positive-ion m/z scale and shown at their own m/z' }, 'negative ions') : null,
       R.libraryType === 'precursors' ? h('span', { class: 'chip accent' }, 'precursors only') : (R.libraryType === 'both' ? h('span', { class: 'chip' }, '+ precursors') : null),
       c1.source === 'lock' ? h('span', { class: 'chip warn', title: 'Too few calibrants of its own; masses were corrected with the lock-spray ion only' }, 'lock-mass calibration') : null,
+      c1.source === 'metabolites' ? h('span', { class: 'chip', title: 'No muropeptides to calibrate on: masses were corrected on metabolites and precursors found in the run (' + (c1.calibrants || []).join(', ') + ')' }, 'calibrated on metabolites') : null,
+      c1.source === 'borrowed' ? h('span', { class: 'chip', title: 'No muropeptides to calibrate on: the m/z curve of ' + c1.borrowedFrom + ' was used, re-levelled on this run’s own calibrants' }, 'calibration from ' + c1.borrowedFrom) : null,
       run.source === 'example' ? h('span', { class: 'chip warn' }, 'example') : null,
       run.source === 'saved' ? h('span', { class: 'chip' }, 'saved') : null));
     function stat(v, unit, k, title, wide) {
@@ -21912,9 +22634,17 @@ APP.views.analyse = (function () {
     }
     info.appendChild(h('div', { class: 'istats' },
       stat(String(R.rows.length), '', 'species at ' + Math.round((R.settings.fdr || 0.01) * 100) + '% FDR', 'Distinct identified features; isomers eluting apart count separately'),
-      stat(UI.pct(R.muroLikePct, 1), '%', 'muropeptide signal explained', 'Share of the MS signal from features that fragment like muropeptides that is identified. All features: ' + UI.pct(R.assignedPct, 1) + '%'),
+      R.libraryType === 'precursors' ?
+        stat(UI.pct(R.assignedPct, 1), '%', 'of all MS signal identified', 'A cytoplasmic extract holds many other metabolites, so this share is small even when the precursor pool is well covered') :
+        (R.muroLikePct === null || R.muroLikePct === undefined ?
+          stat(UI.pct(R.assignedPct, 1), '%', 'of all MS signal identified', 'Without usable MS/MS, features cannot be sorted by a muropeptide fragment signature, so this is the share of all feature signal') :
+          stat(UI.pct(R.muroLikePct, 1), '%', 'muropeptide signal explained', 'Share of the MS signal from features that fragment like muropeptides that is identified. All features: ' + UI.pct(R.assignedPct, 1) + '%')),
       stat(c1.ok ? UI.fx(c1.sd, 1) : '–', 'ppm', 'mass error after calibration', c1.ok ? 'Before the run-specific correction: ' + UI.fx(c1.rmsBefore, 1) + ' ppm r.m.s.' : 'Calibration was not possible'),
-      stat(M.xlink !== undefined ? UI.pct(M.xlink, 1) : '–', '%', 'cross-linkage, MS' + (MU ? ' (UV ' + UI.pct(MU.xlink, 1) + '%)' : ''), 'Peptide cross-links per stem'),
+      R.libraryType === 'precursors' ? (function () {
+        var P = R.precursors, top = P ? Object.keys(P.byKind).sort(function (a, b) { return P.byKind[b] - P.byKind[a]; })[0] : null;
+        return stat(top ? UI.pct(P.byKind[top], 0) : '–', top ? '%' : '', top ? top.replace(/^Recycling: /, '') : 'no precursor found', 'The largest kind in the identified pool (MS); every kind is in Profile');
+      })() :
+      stat(M.xlink !== undefined ? UI.pct(M.xlink, 1) : '–', '%', 'cross-linkage, MS' + (MU ? ' (UV ' + UI.pct(MU.xlink, 1) + '%)' : ''), 'Peptide cross-links per stem' + (M.xlinkG !== undefined ? '. ½ dimers + ⅔ trimers + ¾ tetramers, on the molar % of muropeptides, gives ' + UI.pct(M.xlinkG, 1) + '%' : '')),
       stat((function () { var t = R.totalMs || run.elapsed || (R.ms ? R.ms + (R.run && R.run.readMs || 0) : 0); return t ? UI.secs(t) : '–'; })(), '', 'analysis time', 'Reading plus analysis, on the computer that ran it'),
       stat(R.run && R.run.size ? UI.bytes(R.run.size) : '–', '', 'file size')));
     /* does the chemistry fit? */
@@ -21922,6 +22652,20 @@ APP.views.analyse = (function () {
       R.fit.warn ? h('div', { class: 'row', style: { gap: '6px', 'margin-top': '6px' } },
         h('button', { class: 'btn sm', onclick: function () { if (APP.views.analyse.showTab) APP.views.analyse.showTab('unexplained'); } }, 'Open Unexplained'),
         h('button', { class: 'btn sm', onclick: function () { A.show('library'); APP.views.library.startFrom && APP.views.library.startFrom(R); } }, UI.icon('plus'), 'Start a library from this run')) : null));
+    /* a run that looks like a cytoplasmic extract */
+    var PH = R.poolHint;
+    if (PH && PH.hits && PH.hits.length) {
+      var x0 = PH.hits[0];
+      info.appendChild(h('div', { class: 'callout' },
+        h('p', null, 'This may be a cytoplasmic (soluble) extract rather than sacculi: ' + UI.plural(PH.hits.length, 'unexplained feature') + ' match nucleotide or lipid-linked precursors, the strongest ' +
+          x0.short + ' (' + UI.fx(x0.mass, 4) + ' Da, ' + UI.fx(x0.rt, 2) + ' min, ' + UI.fx(x0.ppm, 1) + ' ppm' + (x0.nuc ? ', with UMP/UDP/uracil fragment ions' : '') + '). ' +
+          'Search it with ' + PH.name + ' to identify the precursors and recycling products.'),
+        h('div', { class: 'row', style: { gap: '6px', 'margin-top': '6px' } },
+          h('button', { class: 'btn sm', onclick: function () {
+            A.settings.profile = PH.pool; A.saveSettings();
+            if (run.file) A.reanalyse(run); else UI.toast(PH.name + ' is now the chemistry. Add the mzML again to search it.');
+          } }, UI.icon('reanalyse'), 'Search as a cytoplasmic extract'))));
+    }
     if (R.customErrors && R.customErrors.length) info.appendChild(h('div', { class: 'callout warn' }, 'Custom building blocks not used: ' + R.customErrors.join(' ')));
     /* laboratory contaminants */
     var CT = R.contaminants;
@@ -21971,6 +22715,7 @@ APP.views.analyse = (function () {
   /* ---------------- right side: chromatogram over tables ---------------- */
   function renderMain() {
     UI.clear(mainArea);
+    switchTab = null;
     chrom = null; chromRun = null; tbodyEl = null; hlRow = null;
     var run = A.currentRun();
     if (!run) { mainArea.appendChild(emptyMain()); return; }
@@ -22044,6 +22789,13 @@ APP.views.analyse = (function () {
         t[1], t[2] !== undefined ? h('span', { class: 'count' }, String(t[2])) : null);
     }));
     mainArea.appendChild(h('section', { class: 'ws-pane ws-tabs', 'aria-label': 'Results' }, bar, body));
+    switchTab = function (name) {
+      ui.tab = name;
+      UI.$$('button', bar).forEach(function (b, i) { b.setAttribute('aria-selected', tabs[i][0] === name ? 'true' : 'false'); });
+      showTab(run, body);
+      var btn = UI.$$('button', bar).filter(function (b, i) { return tabs[i][0] === name; })[0];
+      if (btn) btn.focus({ preventScroll: true });
+    };
     buildChrom(run, host, legend, function () { viewBtn.textContent = atFull() ? 'Identified region' : 'Whole run'; });
     showTab(run, body);
   }
@@ -22218,6 +22970,14 @@ APP.views.analyse = (function () {
     if (r.isomerCall && r.isomerCall.kind === 'call') tags.push(h('span', { class: 'chip good', title: 'Fragments unique to this arrangement were found' }, 'MS/MS resolves isomer'));
     else if (r.isomerCall && r.isomerCall.kind === 'lean') tags.push(h('span', { class: 'chip', title: 'Fragments favour this arrangement without excluding the others' }, 'MS/MS favours'));
     if (r.focused) tags.push(h('span', { class: 'chip accent', title: 'Found by the focused second search (relatives of identified species, with its own decoys)' }, 'focused'));
+    if (r.rescued) tags.push(h('span', { class: 'chip accent', title: 'Found by extracting its expected ions directly (targeted search of the pool; the same was done at the decoy masses)' }, 'targeted'));
+    if (r.monoOnly) tags.push(h('span', { class: 'chip warn', title: 'Seen as one ion without its M+1 isotope, which at this intensity would sit below the noise: mass, peak shape and any fragments carry the identification' }, 'single ion'));
+    /* in a pool search adduct ions are part of the evidence: named once each */
+    if (R.libraryType === 'precursors') {
+      var adds = [];
+      (r.satellites || []).forEach(function (x) { var t = /adduct/.test(x.rel || '') ? x.rel.replace(/ adduct.*$/, ' adduct') : null; if (t && adds.indexOf(t) < 0) adds.push(t); });
+      adds.slice(0, 3).forEach(function (t) { tags.push(h('span', { class: 'chip', title: 'Co-eluting ion of the same molecule, counted as evidence' }, t)); });
+    }
     if (r.ref && r.ref.length) tags.push(h('span', { class: 'chip', title: 'Same composition as curated reference ' + r.ref.map(function (x) { return x.id + ' ' + x.name + (x.aliases ? ' (' + x.aliases + ')' : ''); }).join('; ') },
       'ref: ' + (r.ref[0].aliases || r.ref[0].name).split(/;\s*/)[0]));
     if (R.reduction === 'partial' && r.redState && r.redState.n) tags.push(h('span', { class: 'chip', title: 'Reducing ends reduced (alditol) out of the total' }, r.redState.r + '/' + r.redState.n + ' reduced'));
@@ -22248,7 +23008,12 @@ APP.views.analyse = (function () {
   }
 
   /* open one of the result tabs from elsewhere (the summary's fit warning) */
-  function showTabByName(name) { ui.tab = name; render(); }
+  var switchTab = null;
+  function showTabByName(name) {
+    if (switchTab) switchTab(name); else { ui.tab = name; mainKey = null; render(); }
+    var pane = mainArea && mainArea.querySelector('.ws-tabs');
+    if (pane && pane.scrollIntoView) pane.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+  }
   return { mount: mount, shown: function () { if (!rail) return; renderRail(); if (chrom) setTimeout(function () { chrom.draw(); }, 0); }, render: render,
            highlight: highlight, unhighlight: unspot, showTab: showTabByName };
 })();
@@ -22275,7 +23040,8 @@ APP.tabs = (function () {
     ['in trimers', function (m) { return m.byKUnits['3']; }],
     ['in tetramers and larger', function (m) { return m.byKUnits['4+']; }],
     ['Cross-linking', null],
-    ['Degree of cross-linkage', function (m) { return m.xlink; }, 'Peptide cross-links per stem, ×100 (Glauner)'],
+    ['Degree of cross-linkage (cross-links per 100 stems)', function (m) { return m.xlink; }, 'Peptide cross-links per stem, ×100; the same as ½ dimers + ⅔ trimers + ¾ tetramers on the % of units'],
+    ['Degree of cross-linkage (½ dimers + ⅔ trimers + ¾ tetramers)', function (m) { return m.xlinkG; }, 'the formula applied to the molar % of muropeptides above'],
     ['by 4-3 (D,D-transpeptidase) links', function (m) { return m.xlink43; }],
     ['by 3-3 (L,D-transpeptidase) links', function (m) { return m.xlink33; }],
     ['by 1-3 (L,D-transpeptidase, Ala1–mDAP3) links', function (m) { return m.xlink13 || 0; }, 'as made by LDTGo in Acetobacteraceae'],
@@ -22716,17 +23482,23 @@ APP.tabs = (function () {
       cards.push(card('m/z calibration', [
         UI.plot.scatter({ width: 520, height: 210, groups: [{ pts: before, color: '--faint', label: 'before', r: 2 }, { pts: after, color: '--accent', label: 'after', r: 2.2 }],
                           hlines: [{ y: 0 }], xlabel: 'm/z', ylabel: 'error, ppm' }),
+        c1.source === 'metabolites' ?
+        h('p', { class: 'note' }, 'No muropeptides to calibrate on, so the curve is a straight line in m/z through ' + c1.nMol + ' metabolites and precursors found in the run (' + (c1.calibrants || []).join(', ') + '), chosen among ' +
+          (R.poolCal ? R.poolCal.tried : '') + ' candidates within ±60 ppm as the line most of them agree on. Error ' + UI.fx(c1.rmsBefore, 1) + ' → ' + UI.fx(c1.rmsAfter, 1) + ' ppm r.m.s.; continued 300 m/z past its last calibrant, then held. ' +
+          (R.poolCal && R.poolCal.borrowed ? 'The curve of ' + R.poolCal.borrowed.from + ' agreed with only ' + R.poolCal.borrowed.n + ' of them, so it was not used. ' : '') + 'Search tolerance ±' + UI.fx(R.tol, 1) + ' ppm.') :
         h('p', { class: 'note' }, c1.points.length + ' calibrant ions from ' + (c1.nMol || '?') + ' confidently matched molecules. Error ' + UI.fx(c1.rmsBefore, 1) + ' → ' + UI.fx(c1.rmsAfter, 1) +
           ' ppm r.m.s.; spread after correction ' + UI.fx(c1.sd, 2) + ' ppm. The correction is a smooth function of ' + termList(c1.terms) +
           ', so instrument drift that depends on any of them is removed. Search tolerance ±' + UI.fx(R.tol, 1) + ' ppm.' + calStartNote(R)),
         satNote(R)]));
-    } else if (c1.ok && c1.source === 'lock') cards.push(card('m/z calibration', [h('p', { class: 'callout' }, 'Too few confident muropeptides to calibrate on (' + (c1.fallbackFrom || 'too few anchors') + '): masses were corrected with the lock-mass reference instead (below), searched at ±' + UI.fx(R.tol, 1) + ' ppm.')]));
+    } else if (c1.ok && c1.source === 'borrowed') cards.push(card('m/z calibration', [h('p', { class: 'callout' }, 'No muropeptides to calibrate on: the m/z curve of ' + c1.borrowedFrom +
+        ' (analysed in this session) was used without its retention-time drift, moved by ' + UI.signed(c1.offset, 1) + ' ppm so that ' + c1.nMol + ' of this run’s own calibrants agree with it (' + (c1.calibrants || []).join(', ') + '). Search tolerance ±' + UI.fx(R.tol, 1) + ' ppm.')]));
+    else if (c1.ok && c1.source === 'lock') cards.push(card('m/z calibration', [h('p', { class: 'callout' }, 'Too few confident muropeptides to calibrate on (' + (c1.fallbackFrom || 'too few anchors') + '): masses were corrected with the lock-mass reference instead (below), searched at ±' + UI.fx(R.tol, 1) + ' ppm.')]));
     else cards.push(card('m/z calibration', [h('p', { class: 'callout warn' }, 'The run could not be calibrated (' + (c1.reason || 'too few confident anchors') + '); masses were searched uncorrected with a wide tolerance.')]));
     if (c2) {
       var pts2 = (c2.points || []).map(function (p) { return [p[0], p[2]]; });
       cards.push(card('High-energy (MSᴱ) calibration', [
         pts2.length ? UI.plot.scatter({ width: 520, height: 190, groups: [{ pts: (c2.points || []).map(function (p) { return [p[0], p[1]]; }), color: '--faint', label: 'before', r: 2 }, { pts: pts2, color: '--mur', label: 'after', r: 2 }], hlines: [{ y: 0 }], xlabel: 'm/z', ylabel: 'error, ppm' }) : null,
-        h('p', { class: 'note' }, c2.ok ? 'Fragment m/z corrected on oxonium and sugar-loss ions of identified features: ' + UI.fx(c2.rmsBefore, 1) + ' → ' + UI.fx(c2.rmsAfter, 1) + ' ppm r.m.s. (' + (c2.nIons || c2.points && c2.points.length || 0) + ' ions).' :
+        h('p', { class: 'note' }, c2.ok ? 'Fragment m/z corrected on ' + (c1.source === 'metabolites' || c1.source === 'borrowed' ? 'the calibrants’ own ions surviving in the high-energy channel (and a nucleotide’s loss of UDP), with a straight line: ' : 'oxonium and sugar-loss ions of identified features: ') + UI.fx(c2.rmsBefore, 1) + ' → ' + UI.fx(c2.rmsAfter, 1) + ' ppm r.m.s. (' + (c2.nIons || c2.points && c2.points.length || 0) + ' ions).' :
           'Not calibrated (' + (c2.reason || 'too few ions') + '); fragments were matched with a wide tolerance.')]));
     }
     /* lock mass */
@@ -22739,6 +23511,12 @@ APP.tabs = (function () {
               'Kept as a check only: the run calibrated on its own muropeptides, which cover the whole m/z range and charge states, where one reference ion can only give an offset.'))
               : h('div', { class: 'callout warn' }, 'Not usable: ' + LK.reason + '.')]));
     }
+    /* targeted extraction of a pool */
+    if (R.rescued) cards.push(card('Targeted extraction', [h('p', { class: 'note' },
+      R.rescued.targets + ' expected ions (each pool structure as ' + (R.polarity === 'negative' ? '[M−H]⁻ in every charge state with its M+1, and its formate and chloride adducts' : '[M+H]⁺ in every charge state with its M+1, and its Na⁺, NH₄⁺ and K⁺ adducts') +
+      ', at the target masses and alike at the four decoy masses) were extracted directly within ±' + UI.fx(R.rescued.tolPpm, 1) + ' ppm. ' + R.rescued.ions + ' ions not already in a feature became features of their own, and ' + R.rescued.adducts +
+      ' adduct ions joined the molecules they belong to. A protonated ion counts only with its M+1, unless its M+1 would lie below the noise; such species are tagged “single ion”. ' +
+      'Fragment ions of a pool are weak, so they are matched within at least ±20 ppm and their elution profiles smoothed over three scans before they are compared with the precursor’s.')]));
     /* scores */
     if (F.targetScores) {
       var thr = F.threshold;
@@ -22771,8 +23549,9 @@ APP.tabs = (function () {
           return h('tr', { class: i === 0 ? 'sel' : '' }, h('td', null, r.name, r.library ? h('span', { class: 'chip', style: { 'margin-left': '6px' } }, 'my library') : null), h('td', null, h('div', { class: 'minibar' }, h('b', null, UI.pct(Math.max(0, r.net) / top * 100, 0) + '%'), h('i', { style: { width: Math.max(0, r.net / top * 100) + '%' } }))), h('td', { class: 'num' }, String(r.n)));
         })))) : h('p', { class: 'note' }, 'The chemistry was chosen by hand: ' + ((R.profile || {}).name || R.profileId) + '.'),
       R.chemWhy ? h('div', { class: 'callout' }, R.chemWhy) : null,
-      rk.length ? h('p', { class: 'note' }, 'Chemistries are compared in pairs on what only one of them can explain. The one with the larger search space has to earn its extras: ' +
+      rk.length ? h('p', { class: 'note' }, 'Chemistries are compared in pairs on what only one of them can explain. The one with the larger search space, or the one that is not the default Gram-negative (mDAP), has to earn its extras: ' +
         'the signal only it explains, less the extra decoy signal its size brings, must be at least 2% of what it explains and come from three or more features. ' +
+        'An oligomer counts towards that only when each stem it joins is also found as a monomer. ' +
         'The chemistry that wins the most of these comparisons is used (highlighted).') : null,
       h('p', { class: 'note' }, 'Net signal is what each chemistry explains minus what its own decoys explain, so a larger search space gains nothing by being larger. ' +
         (rt.reduced !== undefined ? 'Reducing ends: reduced ' + UI.big(rt.reduced) + ', not reduced ' + UI.big(rt.none) + ', both forms ' + UI.big(rt.partial) + '. ' : '') +
@@ -22841,15 +23620,18 @@ APP.tabs = (function () {
       (R.libraryType === 'precursors' ? '; nucleotide and lipid-linked precursors only, generated from the stem rules' : (R.libraryType === 'both' ? ', and the nucleotide and lipid-linked precursors generated from the same stem rules' : '')) +
       (cb ? '; with ' + cb + ' user-defined building block' + (cb > 1 ? 's' : '') : '') +
       (R.refs && R.refs.n ? '; ' + R.refs.n + ' curated literature structures were searched alongside' : '') + '). ' +
-      (c1.ok && c1.source === 'lock' ? 'The m/z axis was corrected with the lock-spray reference ion (' + (R.lock && R.lock.ion ? R.lock.ion : 'lock mass') + '; offset and retention-time drift), and features were matched within ±' + UI.fx(R.tol, 1) + ' ppm. ' :
+      (c1.ok && c1.source === 'metabolites' ? 'The m/z axis was corrected with a straight line through ' + c1.nMol + ' metabolites and precursors found in the run (' + (c1.calibrants || []).join(', ') + '; error ' + UI.fx(c1.rmsBefore, 1) + ' → ' + UI.fx(c1.rmsAfter, 1) + ' ppm r.m.s.), and features were matched within ±' + UI.fx(R.tol, 1) + ' ppm. ' :
+       c1.ok && c1.source === 'borrowed' ? 'The m/z axis was corrected with the calibration curve of ' + c1.borrowedFrom + ' from the same session, re-levelled (' + UI.signed(c1.offset, 1) + ' ppm) on ' + c1.nMol + ' calibrants found in this run, and features were matched within ±' + UI.fx(R.tol, 1) + ' ppm. ' :
+       c1.ok && c1.source === 'lock' ? 'The m/z axis was corrected with the lock-spray reference ion (' + (R.lock && R.lock.ion ? R.lock.ion : 'lock mass') + '; offset and retention-time drift), and features were matched within ±' + UI.fx(R.tol, 1) + ' ppm. ' :
        c1.ok ? 'The m/z axis was recalibrated on the run itself using ' + (c1.points ? c1.points.length : '') + ' ions of confidently matched species (error ' + UI.fx(c1.rmsBefore, 1) + ' → ' + UI.fx(c1.rmsAfter, 1) + ' ppm r.m.s.), and features were matched within ±' + UI.fx(R.tol, 1) + ' ppm. ' : 'Masses were matched without recalibration. ') +
       'Each match was scored on mass error, isotope pattern, charge-state and elution consistency' + (R.ms2Used ? ', and MSᴱ fragment evidence (GlcNAc oxonium and loss ions, and structure-specific fragments co-eluting with the precursor)' : '') +
       '; confidence was controlled by target-decoy competition against the search space shifted by ±7 and ±13 Da (Elias & Gygi, 2007), keeping species at q ≤ ' + UI.pct((st.fdr || 0.01) * 100, 0) + '%' +
       (R.focused ? ', followed by a focused search of compositions related to those identified, with its own decoys and the same FDR' : '') + '. ' +
-      R.rows.length + ' species were identified, explaining ' + UI.pct(R.muroLikePct, 1) + '% of the signal from features with a muropeptide fragmentation signature. ' +
+      (R.rescued ? 'Every expected ion of the pool (each charge state with its M+1, and common adducts) was also extracted directly, at the target and alike at the decoy masses, so that ions too weak for untargeted feature detection could be scored. ' : '') +
+      R.rows.length + ' species were identified, explaining ' + (R.libraryType === 'precursors' || R.muroLikePct === null || R.muroLikePct === undefined ? UI.pct(R.assignedPct, 1) + '% of all MS signal. ' : UI.pct(R.muroLikePct, 1) + '% of the signal from features with a muropeptide fragmentation signature. ') +
       'Relative abundances were calculated from MS feature areas (all charge states and adducts)' +
       (R.uv && R.uv.deconvolved ? ' and from the UV trace at ' + Math.round(R.uv.wl || 205) + ' nm after asymmetric least-squares baseline correction (Eilers & Boelens, 2005), apportioned between species by fitting their MS elution profiles (UV-to-MS delay ' + UI.fx(R.uv.lag * 60, 1) + ' s)' : '') +
-      '; oligomerisation, cross-linkage and chain length were derived from these as in Glauner (1988).';
+      '; oligomerisation, cross-linkage (cross-links per stem) and chain length were derived from these as in Glauner (1988), and cross-linkage was also calculated as ½·dimers + ⅔·trimers + ¾·tetramers on molar percentages.';
     return t;
   }
   function methods(run) {
@@ -23159,7 +23941,18 @@ APP.exports = (function () {
     return c;
   }
   function profileRows(R) {
-    var out = [];
+    var out = [], P = R.precursors;
+    /* a pool: its kinds and stem lengths in place of the sacculus metrics */
+    if (R.libraryType === 'precursors') {
+      out.push({ metric: 'Precursor pool, % of identified signal (MS)', ms: null, uv: null });
+      if (!P) { out.push({ metric: '  nothing identified', ms: null, uv: null }); return out; }
+      Object.keys(P.byKind).forEach(function (k) { out.push({ metric: '  ' + k, ms: P.byKind[k], uv: null }); });
+      if (Object.keys(P.byStem).length) {
+        out.push({ metric: 'Nucleotide and lipid precursors by stem length', ms: null, uv: null });
+        Object.keys(P.byStem).forEach(function (k) { out.push({ metric: '  stem of ' + k, ms: P.byStem[k], uv: null }); });
+      }
+      return out;
+    }
     APP.tabs.METRICS.forEach(function (m) {
       if (!m[1]) { out.push({ metric: m[0], ms: null, uv: null }); return; }
       out.push({ metric: '  ' + m[0], ms: R.metrics ? m[1](R.metrics) : null, uv: R.metricsUV ? m[1](R.metricsUV) : null, note: m[2] || '' });
@@ -23170,9 +23963,9 @@ APP.exports = (function () {
     var R = run.result, sheets = [];
     var fdrPct = Math.round((R.settings.fdr || 0.01) * 100);
     sheets.push({ name: 'Species', cols: speciesCols(R), rows: R.rows,
-      note: [run.name + ' -- muropeptides identified at ' + fdrPct + '% FDR by MuroSense',
+      note: [run.name + ' -- ' + (R.libraryType === 'precursors' ? 'precursors and recycling products' : 'muropeptides') + ' identified at ' + fdrPct + '% FDR by MuroSense',
              (R.profile ? R.profile.name : R.profileId) + '; ' + ({ reduced: 'NaBH4-reduced', none: 'not reduced', partial: 'partly reduced' }[R.reduction] || '') +
-             '; ' + UI.pct(R.muroLikePct, 1) + '% of muropeptide-like MS signal explained']});
+             (R.libraryType === 'precursors' || R.muroLikePct === null || R.muroLikePct === undefined ? '; ' + UI.pct(R.assignedPct, 1) + '% of all MS signal identified' : '; ' + UI.pct(R.muroLikePct, 1) + '% of muropeptide-like MS signal explained')]});
     sheets.push({ name: 'Profile', cols: [{ label: 'Metric', key: 'metric', width: 44 }, { label: 'From MS', key: 'ms', fmt: '0.00', width: 10 },
       { label: 'From UV', key: 'uv', fmt: '0.00', width: 10 }, { label: 'Note', key: 'note', width: 40 }], rows: profileRows(R) });
     var tot = R.totalArea || 1;
@@ -23234,7 +24027,7 @@ APP.exports = (function () {
       ['Chemistry', R.profile ? R.profile.name : R.profileId], ['Chemistry chosen', R.settings.profile === 'auto' ? 'automatically' : 'by hand'],
       ['Reducing ends', R.reduction], ['Ion polarity', (R.polarity || 'positive') + (R.polarityForced ? ' (set by hand)' : ' (from the file)')],
       ['Library type', R.libraryType || 'mature'], ['Custom building blocks', R.customBlocks ? (R.customBlocks.mods || []).map(function (m) { return m.code + ' ' + m.formula; }).concat((R.customBlocks.residues || []).map(function (r) { return r.code + ' ' + r.formula; })).join('; ') : ''],
-      ['FDR', R.settings.fdr], ['Mass tolerance (ppm)', R.tol], ['Calibration source', c1.source === 'lock' ? 'lock mass (too few internal anchors)' : 'internal (identified muropeptides)'],
+      ['FDR', R.settings.fdr], ['Mass tolerance (ppm)', R.tol], ['Calibration source', c1.source === 'lock' ? 'lock mass (too few internal anchors)' : c1.source === 'metabolites' ? 'metabolites and precursors in the run: ' + (c1.calibrants || []).join(', ') : c1.source === 'borrowed' ? 'curve of ' + c1.borrowedFrom + ', re-levelled by ' + UI.fx(c1.offset, 1) + ' ppm' : 'internal (identified muropeptides)'],
       ['Lock mass', R.lock ? (R.lock.ok ? R.lock.ion + ': offset ' + (+R.lock.offset).toFixed(2) + ' ppm, ' + R.lock.n + ' scans' : R.lock.reason) : ''], ['Calibration spread after (ppm)', c1.sd],
       ['Calibration error before (ppm rms)', c1.rmsBefore], ['Calibration error after (ppm rms)', c1.rmsAfter], ['Calibration anchors', c1.points ? c1.points.length : ''],
       ['Calibration terms', c1.terms && c1.terms.length ? APP.tabs.termList(c1.terms) : ''],
@@ -23536,7 +24329,7 @@ APP.views.compare = (function () {
     function byK(k) { return runs.map(function (r) { var x = met(r); return x ? (x.byK[k] || 0) : null; }); }
     if (st.view === 'oligo') { stacked = true; series = OLIGO.map(function (o) { return { label: o[1], color: o[2], values: byK(o[0]) }; }); }
     else if (st.view === 'xlink') {
-      series = [['Degree of cross-linkage', 'xlink', '--accent'], ['by 4-3 links', 'xlink43', '--glc'], ['by 3-3 links', 'xlink33', '--mur'], ['by 1-3 links', 'xlink13', '--uv']]
+      series = [['Cross-links per 100 stems', 'xlink', '--accent'], ['½ di + ⅔ tri + ¾ tetra (molar)', 'xlinkG', '--brown'], ['by 4-3 links', 'xlink43', '--glc'], ['by 3-3 links', 'xlink33', '--mur'], ['by 1-3 links', 'xlink13', '--uv']]
         .filter(function (q) { return q[1] !== 'xlink13' || runs.some(function (r) { var x = met(r); return x && x.xlink13 > 0.005; }); }).map(function (q) {
         return { label: q[0], color: q[2], values: runs.map(function (r) { var x = met(r); return x ? x[q[1]] : null; }) };
       });
@@ -23982,7 +24775,7 @@ APP.views.structure = (function () {
       setTimeout(function () { run(mass); }, 20);
     }
     function run(mass) {
-      var ids = res.profile === 'auto' ? L.PROFILE_ORDER : [res.profile];
+      var ids = res.profile === 'auto' ? L.PROFILE_ORDER.concat(L.POOL_ORDER) : [res.profile];
       var hits = [];
       ids.forEach(function (pid) {
         var S = spaceFor(pid, res.red);
@@ -24099,6 +24892,8 @@ APP.views.library = (function () {
       h('button', { class: 'btn sm', onclick: function () { fileIn.click(); }, title: 'Add a library saved as a .murosense-library.json file' }, UI.icon('open'), 'Import'), fileIn));
     side.appendChild(h('h4', null, 'Built-in chemistries'));
     side.appendChild(h('div', { class: 'profile-list', role: 'list' }, L.PROFILE_ORDER.map(function (id) { var p = L.PROFILES[id]; return item(id, p.short, p.examples || ''); })));
+    side.appendChild(h('h4', null, 'Cytoplasmic pools'));
+    side.appendChild(h('div', { class: 'profile-list', role: 'list' }, L.POOL_ORDER.map(function (id) { var p = L.PROFILES[id]; return item(id, p.short, 'precursors and recycling products · ' + (p.examples || '')); })));
     if (SAC.curated) {
       side.appendChild(h('h4', null, 'Reference list'));
       side.appendChild(h('div', { class: 'profile-list', role: 'list' }, item('ref', 'Curated muropeptides', SAC.curated.rows().length + ' from the literature, with names and organisms')));
@@ -24275,10 +25070,10 @@ APP.views.library = (function () {
     var lib = A.libFromValue(id);
     if (lib) return A.libContent(lib);
     var p = L.PROFILES[id] || L.PROFILES.gramneg;
-    return { name: p.short, examples: p.examples || '', type: 'mature', glycans: p.glycans, stem: p.stem, stemLen: p.stemLen, bridges: p.bridges || [], bridgeAt: p.bridgeAt || 3,
+    return { name: p.short, examples: p.examples || '', type: p.type || 'mature', glycans: p.glycans, stem: p.stem, stemLen: p.stemLen, bridges: p.bridges || [], bridgeAt: p.bridgeAt || 3,
              bridgeOptional: p.bridgeOptional !== false, directLinks: p.directLinks !== false, links: p.links, maxOligomer: p.maxOligomer || 3, lpp: p.lpp || [],
              chains: !!p.chains, chainMax: p.chainMax || 2, chainShort: !!p.chainShort, extras: p.extras || [], refs: refSetFor(id), maxMods: p.maxMods || 0,
-             prec: L.PREC_DEFAULT, oligoFrom: [], exclude: [], custom: { mods: [], residues: [] }, notes: '' };
+             prec: Object.assign({}, L.PREC_DEFAULT, p.prec || {}), oligoFrom: [], exclude: [], custom: { mods: [], residues: [] }, notes: '' };
   }
   function listText(a) { return (a || []).length ? a.length + ': ' + a.slice(0, 6).join(', ') + (a.length > 6 ? ', …' : '') : 'none'; }
   var DIFF = [
@@ -24338,7 +25133,7 @@ APP.views.library = (function () {
   function compareCard(id) {
     var out = h('div');
     var others = A.libraries.filter(function (l) { return 'lib:' + l.id !== id; }).map(function (l) { return ['lib:' + l.id, 'My library: ' + l.name]; })
-      .concat(L.PROFILE_ORDER.filter(function (k) { return k !== id; }).map(function (k) { return [k, L.PROFILES[k].short]; }));
+      .concat(L.PROFILE_ORDER.concat(L.POOL_ORDER).filter(function (k) { return k !== id; }).map(function (k) { return [k, L.PROFILES[k].short]; }));
     var sel = h('select', { class: 'input', 'aria-label': 'Compare with', onchange: go }, others.map(function (o) { return h('option', { value: o[0] }, o[1]); }));
     var lib = A.libFromValue(id);
     if (lib && lib.from) { var match = others.filter(function (o) { return nameOf(o[0]) === lib.from; })[0]; if (match) sel.value = match[0]; }
@@ -24378,8 +25173,8 @@ APP.views.library = (function () {
              bridgeAt: p.bridgeAt || 3, bridgeOptional: p.bridgeOptional !== false, directLinks: p.directLinks !== false, links: p.links.slice(),
              maxOligomer: p.maxOligomer || 3, lpp: (p.lpp || []).slice(), chains: !!p.chains, chainMax: p.chainMax || 2, chainShort: !!p.chainShort,
              extras: lib ? lib.extras.slice() : (p.extras || []).slice(), from: base,
-             refs: lib ? lib.refs : refSetFor(id), maxMods: lib ? lib.maxMods : (p.maxMods || 0), type: lib ? lib.type : 'mature',
-             prec: lib ? Object.assign({}, lib.prec) : Object.assign({}, L.PREC_DEFAULT), oligoFrom: lib ? lib.oligoFrom.slice() : [], exclude: lib ? lib.exclude.slice() : [],
+             refs: lib ? lib.refs : refSetFor(id), maxMods: lib ? lib.maxMods : (p.maxMods || 0), type: lib ? lib.type : (p.type || 'mature'),
+             prec: lib ? Object.assign({}, lib.prec) : Object.assign({}, L.PREC_DEFAULT, p.prec || {}), oligoFrom: lib ? lib.oligoFrom.slice() : [], exclude: lib ? lib.exclude.slice() : [],
              custom: lib ? JSON.parse(JSON.stringify(lib.custom)) : { mods: [], residues: [] }, notes: lib ? lib.notes : '' };
   }
   function scratch() {
@@ -24526,7 +25321,7 @@ APP.views.library = (function () {
   function newChoice() {
     var src = h('select', { class: 'input', 'aria-label': 'Chemistry to start from' },
       A.libraries.map(function (lib) { return h('option', { value: 'lib:' + lib.id, selected: cur === 'lib:' + lib.id }, 'My library: ' + lib.name); })
-        .concat(L.PROFILE_ORDER.map(function (k) { return h('option', { value: k, selected: cur === k }, L.PROFILES[k].short); })));
+        .concat(L.PROFILE_ORDER.concat(L.POOL_ORDER).map(function (k) { return h('option', { value: k, selected: cur === k }, L.PROFILES[k].short); })));
     var fileIn = h('input', { type: 'file', accept: '.json,application/json', hidden: true, onchange: function () {
       var f = fileIn.files[0]; fileIn.value = '';
       if (f) A.importLibraryFile(f).then(function (lib) { if (lib) select('lib:' + lib.id); });
@@ -24559,14 +25354,14 @@ APP.views.library = (function () {
     ['lipidI', 'Lipid I: undecaprenyl-PP-MurNAc with its stem'],
     ['lipidII', 'Lipid II: lipid I with GlcNAc (amidated stems included when the rules allow them)'],
     ['lipidIIBridges', 'Lipid II carrying each bridge'],
-    ['recycling', 'Recycling products: anhMurNAc, anhMurNAc-peptides, GlcNAc-anhMurNAc'],
-    ['freePeptides', 'Free stem peptides of two to five residues']
+    ['recycling', 'Recycling products: anhMurNAc, anhMurNAc-peptides, GlcNAc-anhMurNAc with and without its stem, GlcNAc-6-P and MurNAc-6-P'],
+    ['freePeptides', 'Free stem peptides of two to five residues, and the D-Ala-D-Ala dipeptide']
   ];
   /* residues offered first at each stem position, and for bridges */
   var PAL = [['A', 'G', 'S'], ['E', 'Q', 'D'], ['J', 'J(Am)', 'K', 'O'], ['A', 'G', 'S'], ['A', 'G', 'S', 'Lac']];
   var PAL_MORE = ['T', 'V', 'L', 'I', 'P', 'F', 'Y', 'W', 'M', 'C', 'N', 'D', 'E', 'Q', 'K', 'R', 'H', 'O', 'J', 'U', 'E(Am)', 'D(Am)'];
   var BR_PAL = ['G', 'A', 'S', 'T', 'L', 'D', 'D(Am)', 'N', 'E', 'K'];
-  var GLY_COMMON = ['gm', 'gm(Anh)', 'g(-Ac)m', 'g(-Ac)m(Anh)', 'gm(Ac)', 'gm(Anh,Ac)', 'gm(Glyc)', 'gm(Lactam)', 'g(X)m', '', 'm'];
+  var GLY_COMMON = ['gm', 'gm(Anh)', 'g(-Ac)m', 'g(-Ac)m(Anh)', 'gm(Ac)', 'gm(Anh,Ac)', 'gm(Glyc)', 'gm(Lactam)', 'g(X)m', '', 'lac', 'm'];
   var RES_HELP = { E: 'Glu (iso-Glu, γ-linked, at position 2)', Q: 'Gln (iso-Gln, the amidated iso-Glu, at position 2)', J: 'meso-diaminopimelic acid (m-DAP)',
                    'J(Am)': 'amidated m-DAP', O: 'ornithine', U: 'lanthionine', Lac: 'D-lactate in place of D-Ala', 'E(Am)': 'amidated Glu', 'D(Am)': 'amidated Asp (iso-Asn)' };
   /* split a list on commas, semicolons or spaces, but not inside brackets: gm(Anh,X) stays whole */
@@ -24604,6 +25399,7 @@ APP.views.library = (function () {
   }
   function glycanTitle(g) {
     if (!g) return 'no sugar: the stem peptide alone';
+    if (g === 'lac') return 'lactyl only: the stem keeping the D-lactyl group of MurNAc, without the sugars';
     return (g.match(/[gm](\([^)]*\))?/g) || []).map(function (p) {
       var s = p[0] === 'g' ? 'GlcNAc' : 'MurNAc', mm = /\(([^)]*)\)/.exec(p);
       return mm ? s + ' (' + mm[1].split(',').map(function (k) { return modLabel(k.trim()); }).join(', ') + ')' : s;
@@ -25247,7 +26043,7 @@ APP.views.library = (function () {
         if (sk === '') gl.push('');
         else if (sk === 'm' || sk === 'gm') gl.push(sk);
         else if (sk === 'gmgm') { S.chains = true; if (gl.indexOf('gm') < 0) gl.push('gm'); }
-        else if (sk === 'lac') notes.push('lactyl-peptides (disaccharide lost) are not a glycan variant here; list them as structures if you need them');
+        else if (sk === 'lac') gl.push('lac');
       });
       if (!gl.length) gl.push('gm');
       var mods = ml.gmods || [], baseG = gl.filter(function (g) { return /m$/.test(g); }), out = gl.slice();
@@ -25580,21 +26376,22 @@ APP.views.guide = (function () {
         [h('b', null, 'Resize. '), 'Drag the border between two panes. Double-click a border to put it back; with a border focused, the arrow keys move it (Shift for larger steps). The sizes are remembered in this browser.'],
         [h('b', null, 'Hide the runs panel '), 'with the arrow at its top when you do not need it; the ', h('i', null, 'Runs'), ' button in the summary brings it back.'],
         [h('b', null, 'Find a species in the chromatogram. '), 'Hover a row of the Species table and its peak is shaded and labelled in the chromatogram, or pointed to from the edge when it lies outside the view. Hover a tick in the chromatogram and its row lights up. Click either for the evidence.'],
-        [h('b', null, 'Zoom. '), 'Turn the mouse wheel over the chromatogram to zoom in and out about the pointer (Shift+wheel, or a sideways swipe, moves along the run); drag across it to zoom to a stretch; double-click to see the whole run. One button switches between ', h('i', null, 'Whole run'), ' and ', h('i', null, 'Identified region'), ', naming the view it goes to.'],
+        [h('b', null, 'Zoom. '), 'Turn the mouse wheel over the chromatogram to zoom in and out about the pointer (Shift+wheel, or a sideways swipe, moves along the run); once zoomed in, hold the mouse button and drag to move the run left and right; drag across the whole run, or Shift+drag at any zoom, to zoom to a stretch; double-click to see the whole run. One button switches between ', h('i', null, 'Whole run'), ' and ', h('i', null, 'Identified region'), ', naming the view it goes to.'],
         [h('b', null, 'Save the chromatogram. '), h('i', null, 'SVG'), ' saves the view as shown as a vector figure (editable in Illustrator or Inkscape), ', h('i', null, 'PNG'), ' as a picture at three times the size; both on a light background with the run’s name and a legend of the traces shown.'],
-        [h('b', null, 'Re-analyse. '), 'Changing a search setting applies to new runs. The bottom of the runs panel says when the open run was analysed with different settings, or when its library has been edited since (each run keeps the library exactly as it was searched, and the notice names what changed), and ', h('i', null, 'Re-analyse with these settings'), ' runs it again. A run reopened from a saved analysis has no mzML attached: add the file again to re-analyse it.'],
-        [h('b', null, 'Theme. '), 'The switch in the header picks light, dark, or whatever the system uses.'],
+        [h('b', null, 'Re-analyse. '), 'Changing a search setting applies to new runs. The bottom of the runs panel says when the open run was analysed with different settings, or when its library has been edited since (each run keeps the library exactly as it was searched, and the notice names what changed), and ', h('i', null, 'Re-analyse with these settings'), ' runs it again. With more than one run in the list it asks whether the settings are for the open run only or for all of them; all of them are then queued as one batch (a run being analysed at that moment finishes first and is queued again). A run reopened from a saved analysis has no mzML attached: add the file again to re-analyse it.'],
+        [h('b', null, 'Theme. '), 'One button in the header switches between the light and the dark theme; it shows the one it switches to. Until it is used, the page follows the system.'],
+        [h('b', null, 'Batches. '), 'When several runs are added together (or more are added while others wait), the foot of the runs panel shows how many of them have been analysed, the time taken so far and about how long is left. The runs list keeps its scroll position as runs finish.'],
         [h('b', null, 'Keyboard. '), 'Tab reaches every table row that opens something and every sortable column heading; Enter or Space opens the row or sorts by the column. Escape closes the evidence panel, and ↑ and ↓ step through the species while it is open.']])]));
 
     body.appendChild(sec('pipeline', 'What happens to a run', [
       ol([
         [h('b', null, 'Reading. '), 'The mzML is read in pieces, so a 150 MB file needs no more memory than its peaks. Every spectrum of every function is kept; the UV trace and the pressure trace too. Each spectrum’s polarity is read from the file (or set in Analyse); negative-ion spectra are moved onto the positive scale ([M−H]⁻ + 2 protons = [M+H]⁺), so the same search serves both, and results are shown at the measured m/z.'],
         [h('b', null, 'Features. '), 'In the low-energy channel, each m/z that persists across scans becomes a chromatographic peak; peaks spaced by 1.003/z that rise and fall together become an isotope envelope, and the monoisotopic peak is chosen by fitting the expected isotope pattern. Envelopes of one molecule at different charge states are joined into a feature. Sodium, potassium, iron and phosphate adducts, in-source losses, and the [2M], [3M] and [4M] clusters abundant species form in the source are counted with their parent instead of being reported as unexplained. When an ion is intense enough to saturate the detector, its monoisotopic peak flattens and shifts; the mass is then read from the M+1 and M+2 isotopes, which stay true, or, when they are saturated as well, from the molecule’s other charge states. Such species carry a “saturated” tag, and a feature seen only saturated takes no part in choosing the chemistry.'],
-        [h('b', null, 'Chemistry. '), 'Each built-in chemistry is tried on the features and scored on the signal it explains beyond what its own decoys explain. Chemistries are then compared in pairs on what only one of them can make: the one with the larger search space must earn its extras (at least 2% of what it explains, from three or more features, beyond the extra decoy signal its size brings), otherwise the simpler one wins. So M. xanthus rules (Gram-negative plus mod X) are only chosen when mod X species are really there. The chemistry that wins most comparisons is used; the Chemistry card says why when it is not the one with the highest net signal.'],
-        [h('b', null, 'Calibration. '), 'Confident matches act as internal calibrants: the m/z error is modelled as a smooth function of m/z, retention time, charge state and intensity, then removed. Beyond the last calibrant the m/z curve keeps the slope a time-of-flight error has (linear in 1/√m/z) instead of stopping flat. Every molecule seen in two or more charge states is a second check: its ions must give one mass once corrected, which sets how the error depends on charge and how far the curve climbs past the calibrants -- exactly where trimers and tetramers sit. Saturated ions are read from their M+1 and M+2 isotopes, in calibration and correction alike. A run that started 15 ppm off ends within about 1 ppm, and the charge states of large oligomers agree. ' +
+        [h('b', null, 'Chemistry. '), 'Each built-in chemistry is tried on the features and scored on the signal it explains beyond what its own decoys explain. Chemistries are then compared in pairs on what only one of them can make: the one with the larger search space, or the one that is not the default Gram-negative (mDAP), must earn its extras (at least 2% of what it explains, from three or more features, beyond the extra decoy signal its size brings), otherwise the simpler one wins. An oligomer only one chemistry can make counts towards that only when each stem it joins is also seen as a monomer: a dimer of two rare stems, neither found on its own, is more likely a chance match. Minor Gram-negative variants (de-N-acetylated GlcNAc, partners without their disaccharide) are left out of this comparison, as they are not a chemistry of their own; they are searched, in monomers and dimers, once Gram-negative is chosen. So M. xanthus rules (Gram-negative plus mod X) are only chosen when mod X species are really there. The chemistry that wins most comparisons is used; the Chemistry card says why when it is not the one with the highest net signal.'],
+        [h('b', null, 'Calibration. '), 'Confident matches act as internal calibrants (only species made of the chemistry’s defining units, not its minor variants): the m/z error is modelled as a smooth function of m/z, retention time, charge state and intensity, then removed. Beyond the last calibrant the m/z curve keeps the slope a time-of-flight error has (linear in 1/√m/z) instead of stopping flat. Every molecule seen in two or more charge states is a second check: its ions must give one mass once corrected, which sets how the error depends on charge and how far the curve climbs past the calibrants -- exactly where trimers and tetramers sit. Saturated ions are read from their M+1 and M+2 isotopes, in calibration and correction alike. A run that started 15 ppm off ends within about 1 ppm, and the charge states of large oligomers agree. ' +
           'A broad chemistry (a large library, or one chosen by hand that only partly fits) can mislead the first curve, because many features then have several candidates; when the first curve looks weak, two more are tried -- one on the chemistry’s core (its least-modified monomers and dimers) and one borrowed from the built-in chemistry that fits the run best -- and another curve replaces the run’s own only when it explains clearly more signal net of its decoys (a fifth more or beyond).'],
         [h('b', null, 'Lock mass. '), 'When the file holds lock-spray scans, the reference ion (leucine-enkephalin or Glu-fibrinopeptide B) is measured in them. It is a check on the calibration, and the fallback when a run has too few muropeptides to calibrate on (precursor-only libraries, sparse samples). Lock-spray scans stored without the instrument’s own calibration sit hundreds of ppm off and are reported as unusable.'],
-        [h('b', null, 'Search. '), 'Every feature is matched against all monomers and dimers the chemistry allows; then trimers to hexamers are built from the units actually seen. Each match is scored on mass error, isotope pattern, charge states, peak shape, in-source relatives and MS/MS.'],
+        [h('b', null, 'Search. '), 'Every feature is matched against all monomers and dimers the chemistry allows; then trimers to hexamers are built from the units actually seen (minor variants, such as Gram-negative stems without their disaccharide or with de-N-acetylated GlcNAc, stay in monomers and dimers). Each match is scored on mass error, isotope pattern, charge states, peak shape, in-source relatives and MS/MS.'],
         [h('b', null, 'Decoys and FDR. '), 'The same search is run against the space shifted by ±7 and ±13 Da. Decoy hits measure how often chance alone wins, and set the score at which the false discovery rate reaches the chosen level.'],
         [h('b', null, 'Focused search. '), 'Features still unexplained are matched against the identified compositions and their close relatives (one oligomer rung, one reducing end, one acetyl, one alanine, anhydro or not), with decoys and an FDR of their own. This recovers isomers and larger oligomers the broad space cannot separate from chance.'],
         [h('b', null, 'Repeated mass differences. '), 'What is still unexplained is compared with the identified species and with itself. A mass difference that links many unexplained features, far more often than differences just beside it, usually means a building block missing from the chemistry (a lateral peptide, a modification, a bridge, or a bigger oligomer). It is listed in Unexplained with possible compositions; differences that combine two listed ones are folded away.'],
@@ -25632,7 +26429,7 @@ APP.views.guide = (function () {
       p('MS areas add up every charge state and adduct of a species. They are fast and sensitive, but they inherit differences in ionisation: large oligomers and hydrophobic species may ionise differently from small ones.'),
       p('UV absorbance at 205 nm comes from peptide bonds and N-acetyl groups and scales with the number of disaccharide-peptide units, which is why it is the classical basis of muropeptide quantification (Glauner, 1988). When species co-elute, a UV peak holds several of them. MuroSense does not split peaks by area ratios; it fits the UV trace as the sum of each species’ own MS elution profile, plus a smooth background for the unresolved hump. Every species gets the UV area its profile accounts for, and features not identified take their own share instead of inflating a neighbour.'),
       p('Two guards keep the split honest. The injection peak at the start of the run is left out of the muropeptide window when it towers over everything after it. And no species may take more than five times the UV its MS signal predicts, scaled on the run’s own UV-to-MS ratio, so a trace species eluting under a large peak cannot take that peak over; a species held at this limit is marked capped in its evidence.'),
-      p('The profile metrics follow Glauner: oligomer percentages are molar (UV areas are divided by the number of stems), cross-linkage is the number of peptide cross-links per stem, and chain length is the number of disaccharide units per 1,6-anhydro end. Where MS and UV agree, the profile does not depend on ionisation.')]));
+      p('The profile metrics follow Glauner: oligomer percentages are molar (UV areas are divided by the number of stems), cross-linkage is the number of peptide cross-links per stem (equal to ½ dimers + ⅔ trimers + ¾ tetramers applied to the % of units), and is also given as that formula applied to the molar % of muropeptides, as some studies apply it to their abundance tables, so a value can be set beside theirs; chain length is the number of disaccharide units per 1,6-anhydro end. Where MS and UV agree, the profile does not depend on ionisation.')]));
 
     body.appendChild(sec('pglang', 'Writing structures (PGLang)', [
       li([
@@ -25647,7 +26444,7 @@ APP.views.guide = (function () {
         'Choosing a chemistry by hand is useful when you know the organism; Automatic is safer when you do not, and can also try your own libraries (tick “Automatic also tries my libraries” in Analyse).'),
       h('div', { class: 'tbl-wrap' }, h('table', { class: 'tbl' }, h('thead', null, h('tr', null, h('th', null, 'Chemistry'), h('th', null, 'Stem and bridge'), h('th', null, 'Main source'))),
         h('tbody', null, [
-          ['Gram-negative (mDAP)', 'A-iE-mDAP-A-A; 4-3 and 3-3; lipoprotein remnants on mDAP', 'Vollmer et al. 2008'],
+          ['Gram-negative (mDAP)', 'A-iE-mDAP-A-A; 4-3 and 3-3; lipoprotein remnants (Lys-Arg, Lys) on mDAP, also as cross-link acceptors; at low levels N-deacetylated GlcNAc and stems that lost their disaccharide', 'Vollmer et al. 2008; Patel et al. 2021'],
           ['M. xanthus', 'as Gram-negative, plus mod X on GlcNAc and Gly at positions 4–5', 'MuroSense / MuroLens data'],
           ['Vibrio (D-Met/D-Leu)', 'non-canonical D-amino acids at position 4', 'Vollmer et al. 2008'],
           ['Gram-negative, O-acetyl', 'O-acetylated MurNAc', 'Vollmer et al. 2008'],
@@ -25704,6 +26501,14 @@ APP.views.guide = (function () {
     body.appendChild(sec('precursors', 'Precursors, negative ions and lock mass', [
       p('A library can search biosynthetic precursors made from its own stem rules: UDP-GlcNAc and UDP-MurNAc, UDP-MurNAc with one to five residues (the Mur ligase products), lipid I and lipid II (with amidated stems where the rules allow them, and lipid II carrying each bridge), and on request recycling products (anhydro-MurNAc with or without its stem, GlcNAc-anhydro-MurNAc) and free stem peptides. ' +
         'UDP and the lipid block the reducing end, so precursors are never reduced. Choose ', h('i', null, 'Precursors only'), ' for a cytoplasmic extract, or ', h('i', null, 'Both'), ' to search them beside the mature muropeptides.'),
+      p(h('b', null, 'Cytoplasmic extracts. '), 'Two ready-made pools are in the Chemistry list, ', h('i', null, 'Cytoplasmic pool (mDAP)'), ' and ', h('i', null, 'Cytoplasmic pool (Lys)'), ': precursors only, with every kind ticked -- UDP-GlcNAc and UDP-MurNAc, the UDP-MurNAc-peptides, lipid I and II, and the recycling products (anhydro-MurNAc and GlcNAc-anhydro-MurNAc with and without their stems, GlcNAc-6-P and MurNAc-6-P, free stem peptides and D-Ala-D-Ala). ' +
+        'Automatic does not try them, as it looks for sacculus muropeptides; when a run finds little but has unexplained features at the masses of nucleotide or lipid-linked precursors, the summary says so and ', h('i', null, 'Search as a cytoplasmic extract'), ' runs it again with the matching pool. ' +
+        'A pool run reports its species by kind in Profile (the share of each kind, and of each stem length); cross-linkage and the other sacculus metrics do not apply. The headline share is of all MS signal, which in a soluble extract is mostly other metabolites. ' +
+        'Three things make a pool search as sensitive as a sacculus search. ',
+        h('i', null, 'Mass correction without muropeptides'), ': the m/z curve is a straight line through metabolites every cell holds (nucleotides, cofactors, amino acids, polyamines) and the pool’s own precursors, found among the features (at least five must agree); or the curve of a sacculus run analysed earlier in the same session, re-levelled on this run’s calibrants and used only if at least three agree. The high-energy channel is corrected on the same calibrants. ',
+        h('i', null, 'Targeted extraction'), ': every expected ion -- each charge state with its M+1, and the Na⁺, NH₄⁺ and K⁺ adducts (formate and chloride in negative mode) -- is extracted directly and scored, including ions too weak to become features on their own; the same is done at the decoy masses, so the FDR still counts chance. A species seen without its M+1, where the M+1 would lie below the noise, is tagged single ion. In-source losses of UDP and UMP are linked to their parent rather than reported as anhydro-MurNAc products. ',
+        h('i', null, 'Precursor fragments'), ': the loss of UDP, the lactyl-peptide ion and the peptide ions of nucleotide precursors are matched within ±20 ppm, with their weak elution profiles smoothed over three scans. ' +
+        'For other stems, copy a pool into a library (Library, New, start from the pool) and change its stem rules.'),
       p('Masses of a precursor-only run are still corrected on the mature muropeptides the rules make (a cytoplasmic extract usually holds some), on the listed precursors, or, failing both, on the lock mass. In the high-energy channel, UMP, UDP and uracil ions mark a nucleotide precursor; these ions are computed from their formulas, not taken from reference spectra.'),
       p(h('b', null, 'Negative ions. '), 'Lipid-linked and nucleotide precursors ionise better in negative mode. Negative-ion files are read directly: deprotonated ions, and formate and chloride adducts, are recognised. If the file does not say its polarity, set it under Ion polarity in Analyse.'),
       p(h('b', null, 'Lock mass. '), 'Quality shows the lock-spray check: the reference ion’s offset, drift and scatter, and whether it was used. Waters files often store lock-spray scans without the instrument calibration; MuroSense then says so and relies on its own calibration.')]));
@@ -25770,7 +26575,7 @@ APP.views.guide = (function () {
         var v = r[2];
         if (R) {
           v = v.replace('{n}', String(R.rows.length)).replace('{cal}', R.cal1 && R.cal1.ok ? '±' + UI.fx(R.cal1.sd, 1) + ' ppm after run-specific calibration' : '–')
-               .replace('{expl}', UI.pct(R.assignedPct, 1) + '% of all feature area; ' + UI.pct(R.muroLikePct, 1) + '% of muropeptide-like signal')
+               .replace('{expl}', UI.pct(R.assignedPct, 1) + '% of all feature area' + (R.muroLikePct === null || R.muroLikePct === undefined ? '' : '; ' + UI.pct(R.muroLikePct, 1) + '% of muropeptide-like signal'))
                .replace('{chem}', (R.profile && R.profile.short) || R.profileId).replace('{time}', R.totalMs ? UI.secs(R.totalMs) + ' including MS/MS and UV' : '–');
         } else v = v.replace('{n}', '130').replace('{cal}', '±1.3 ppm after run-specific calibration').replace('{expl}', '27.7% of all feature area; 94.4% of muropeptide-like signal')
                     .replace('{chem}', 'Streptococcus (Ala bridge)').replace('{time}', 'about 18 s in this page, including MS/MS and UV');
@@ -25894,7 +26699,7 @@ APP.views.home = (function () {
         h('button', { class: 'btn sm', onclick: function () { A.show('analyse'); } }, 'Go to Analyse'))));
     sessionBox.appendChild(h('div', { class: 'session-list' }, A.runs.map(function (run) {
       var meta;
-      if (run.status === 'done' && run.result) meta = run.result.rows.length + ' species · ' + UI.pct(run.result.muroLikePct === null ? run.result.assignedPct : run.result.muroLikePct, 0) + '% of muropeptide signal explained';
+      if (run.status === 'done' && run.result) meta = run.result.rows.length + ' species · ' + UI.pct(run.result.muroLikePct === null ? run.result.assignedPct : run.result.muroLikePct, 0) + (run.result.libraryType === 'precursors' || run.result.muroLikePct === null ? '% of MS signal identified' : '% of muropeptide signal explained');
       else if (run.status === 'error') meta = 'Failed: ' + run.error;
       else meta = run.status === 'queued' ? 'Waiting to start' : (run.stage || 'Working') + ' · ' + Math.round((run.frac || 0) * 100) + '%';
       return h('button', { class: 'session-card', onclick: function () { A.current = run.id; A.show('analyse'); A.emit('runs'); } },
