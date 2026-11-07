@@ -423,6 +423,13 @@ th.refcol, td.refcol { background: color-mix(in srgb, var(--accent) 7%, transpar
 .chart-scroll svg { display: block; }
 /* bar charts keep their width and scroll sideways; the value axis stays at the left */
 .chart-scroll .plot { max-width: none; }
+/* save buttons beside a table or a figure */
+.dl-btns { display: inline-flex; gap: 2px; flex: none; margin-left: auto; }
+.dl-btns .btn { padding: 2px 7px; font-size: 11.5px; font-weight: 500; color: var(--muted); }
+.dl-btns .btn:hover { color: var(--ink); }
+.dl-btns .btn svg { width: 12px; height: 12px; }
+.dl-row { display: flex; justify-content: flex-end; margin: 0 0 2px; }
+.dl-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .qc-tbl td { vertical-align: top; }
 /* the checklist grid: a coloured dot before each value */
 .qc-grid td, .qc-grid th { white-space: nowrap; }
@@ -434,6 +441,15 @@ th.refcol, td.refcol { background: color-mix(in srgb, var(--accent) 7%, transpar
 .qc-cell.qc-none { color: var(--faint); }
 .qc-cell.qc-none::before { background: var(--line); }
 .pg-tbl tr.pg-low td { background: color-mix(in srgb, var(--bad) 7%, transparent); }
+/* Compare: the section tabs stay at the top while the page scrolls */
+.cmp-tabs { position: sticky; top: 0; z-index: 6; background: var(--bg); margin: 16px 0 14px; padding-top: 6px; }
+.cmp-tabs .subtabs { padding: 0 4px; overflow-x: auto; flex-wrap: nowrap; scrollbar-width: thin; }
+.cmp-tabs .subtabs button { white-space: nowrap; }
+.cmp-secs > [hidden] { display: none !important; }
+/* the checklist: unticked samples stay, dimmed */
+.qc-grid tr.off td { opacity: .45; }
+.qc-grid tr.off td.tickcol { opacity: 1; }
+.qc-grid th.sortable { cursor: pointer; user-select: none; }
 .qc-tbl td.num { white-space: nowrap; }
 .bars { display: flex; width: max-content; min-width: 100%; }
 .bars > svg { flex: none; }
@@ -21661,7 +21677,7 @@ UI.plot = (function () {
     var H = o.height || 300, W = m.l + m.r + Math.max(n, 1) * gw, ph = H - m.t - m.b;
     /* the value axis on its own, to stay in view; the bars beside it */
     var ax = s('svg', { class: 'plot bars-axis', viewBox: '0 0 ' + m.l + ' ' + H, width: m.l, height: H, 'aria-hidden': 'true' });
-    ax.appendChild(s('rect', { x: 0, y: 0, width: m.l, height: m.t + ph + 4, style: { fill: 'var(--panel-2)' } }));
+    ax.appendChild(s('rect', { x: 0, y: 0, width: m.l, height: m.t + ph + 4, 'data-screen': '1', style: { fill: 'var(--panel-2)' } }));
     var svg = s('svg', { class: 'plot', viewBox: m.l + ' 0 ' + (W - m.l) + ' ' + H, width: W - m.l, height: H, role: 'img', 'aria-label': o.label || 'bar chart' });
     var ys = function (v) { return m.t + ph - Math.min(v, ymax) / ymax * ph; };
     tks.forEach(function (t, k) {
@@ -21708,6 +21724,291 @@ UI.plot = (function () {
 
   return { Chrom: Chrom, lines: lines, sticks: sticks, scatter: scatter, bars: bars, hist: hist, ticks: ticks, niceStep: niceStep, tickLabel: tickLabel, sampleBars: sampleBars,
            withLight: withLight, svgToPng: svgToPng, pngDpi: pngDpi, SvgCtx: SvgCtx };
+})();
+
+/* ---- u02b_save.js ---- */
+/* ==========================================================================
+   Saving what is on screen: a figure drawn as SVG saves as a vector SVG or
+   a PNG, a table as an Excel sheet.
+     - figures are saved in the light theme's colours, whatever the theme on
+       screen: every element's computed look is written onto a copy; a chart
+       drawn as several SVGs side by side (bars with their value axis apart)
+       is joined into one, and can be given a legend
+     - a table keeps its numbers as numbers: a cell can give its exact value
+       in data-v and a heading its full name in data-x; otherwise numbers are
+       read from the text, and a unit every number of a column shares (%, ×,
+       ppm, s, min, Da) moves into its heading
+     - attach(root, name) gives every chart, drawing and table inside root
+       its buttons, once
+   ========================================================================== */
+UI.dl = (function () {
+  'use strict';
+  var h = UI.h;
+  var PROPS = ['fill', 'fill-opacity', 'stroke', 'stroke-width', 'stroke-opacity', 'stroke-dasharray', 'stroke-linecap', 'stroke-linejoin',
+               'opacity', 'font-family', 'font-size', 'font-weight', 'font-style', 'text-anchor', 'dominant-baseline', 'letter-spacing'];
+  function esc(s) { return String(s).replace(/[&<>"]/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]; }); }
+  function safe(s) { return String(s || 'figure').replace(/\s*[·:]\s*/g, '_').replace(/[^\w.\-]+/g, '_').replace(/_+/g, '_').replace(/^_|_$/g, '').slice(0, 90) || 'figure'; }
+  /* a copy of an SVG element with every element's computed look written on it */
+  function inline(src) {
+    var dst = src.cloneNode(true), drop = [];
+    (function walk(a, b) {
+      if (!a || !b || a.nodeType !== 1) return;
+      /* what is there for the screen only (a mask under a sticky axis) */
+      if (a.hasAttribute('data-screen')) { drop.push(b); return; }
+      var cs = getComputedStyle(a), st = [];
+      if (cs.display === 'none' && a.tagName.toLowerCase() !== 'svg') st.push('display:none');
+      PROPS.forEach(function (p) { var v = cs.getPropertyValue(p); if (v !== '' && v !== null && v !== undefined) st.push(p + ':' + v); });
+      b.setAttribute('style', st.join(';'));
+      b.removeAttribute('class');
+      b.removeAttribute('data-hide'); b.removeAttribute('data-hiderun');
+      for (var i = 0; i < a.children.length; i++) walk(a.children[i], b.children[i]);
+    })(src, dst);
+    drop.forEach(function (x) { if (x.parentNode) x.parentNode.removeChild(x); });
+    return dst;
+  }
+  /* the SVG parts of a figure: one svg, or the outermost svgs inside it, each
+     seen through its viewBox (parts that tile the plane join seamlessly) */
+  function parts(el) {
+    if (!el) return [];
+    if (el.tagName && el.tagName.toLowerCase() === 'svg') return [el];
+    return Array.prototype.filter.call(el.querySelectorAll('svg'), function (s) { return !(s.parentElement && s.parentElement.closest('svg')); });
+  }
+  function box(s) {
+    var b = s.viewBox && s.viewBox.baseVal, r = s.getBoundingClientRect();
+    if (b && b.width > 0 && b.height > 0) return { x: b.x, y: b.y, w: b.width, h: b.height };
+    return { x: 0, y: 0, w: +s.getAttribute('width') || r.width || 100, h: +s.getAttribute('height') || r.height || 100 };
+  }
+  /* o: { legend: [{ label, color }] (drawn above the figure), title } */
+  function figure(el, o) {
+    o = o || {};
+    var list = parts(el);
+    if (!list.length) return null;
+    return UI.plot.withLight(function () {
+      var x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity, items = list.map(function (s) {
+        var b = box(s);
+        x0 = Math.min(x0, b.x); y0 = Math.min(y0, b.y); x1 = Math.max(x1, b.x + b.w); y1 = Math.max(y1, b.y + b.h);
+        return { s: s, b: b };
+      });
+      var W = x1 - x0, top = 0, fam = UI.css('--sans') || 'sans-serif', ink = UI.css('--ink') || '#172124', head = [];
+      var mc = document.createElement('canvas').getContext('2d');
+      /* a title, wrapped to the width of a narrow figure */
+      if (o.title) {
+        mc.font = '700 13px ' + fam;
+        var lim = Math.max(W, 260) - 16, line = '', lines = [];
+        String(o.title).split(' ').forEach(function (w) { var t = line ? line + ' ' + w : w; if (line && mc.measureText(t).width > lim) { lines.push(line); line = w; } else line = t; });
+        if (line) lines.push(line);
+        lines.forEach(function (ln, i) { head.push('<text x="' + (x0 + 8) + '" y="' + (y0 + 17 + i * 17) + '" style="font-family:' + esc(fam) + ';font-size:13px;font-weight:700;fill:' + ink + '">' + esc(ln) + '</text>'); });
+        top += 7 + lines.length * 17;
+      }
+      /* a legend, wrapped to the width */
+      if (o.legend && o.legend.length) {
+        var lx = x0 + 8, ly = y0 + top + 14;
+        mc.font = '11px ' + fam;
+        o.legend.forEach(function (it) {
+          var tw = mc.measureText(it.label).width + 30;
+          if (lx > x0 + 8 && lx + tw > x0 + Math.max(W, 260) - 8) { lx = x0 + 8; ly += 18; }
+          var col = String(it.color || '--ink').indexOf('--') === 0 ? (UI.css(it.color) || '#888') : it.color;
+          head.push('<rect x="' + lx + '" y="' + (ly - 9) + '" width="10" height="10" rx="2" style="fill:' + esc(col) + '"/>');
+          head.push('<text x="' + (lx + 15) + '" y="' + ly + '" style="font-family:' + esc(fam) + ';font-size:11px;fill:' + ink + '">' + esc(it.label) + '</text>');
+          lx += tw;
+        });
+        top = ly - y0 + 10;
+      }
+      W = Math.max(W, top ? 260 : 0);
+      var H = y1 - y0 + top, bg = UI.css('--panel') || '#ffffff', ser = new XMLSerializer();
+      var out = ['<svg xmlns="http://www.w3.org/2000/svg" width="' + Math.ceil(W) + '" height="' + Math.ceil(H) + '" viewBox="' + x0 + ' ' + (y0 - top) + ' ' + W + ' ' + H + '">',
+                 '<rect x="' + x0 + '" y="' + (y0 - top) + '" width="' + W + '" height="' + H + '" style="fill:' + esc(bg) + '"/>'];
+      head.forEach(function (t) { out.push(t.replace(/ y="([\d.\-]+)"/g, function (m, v) { return ' y="' + (+v - top) + '"'; })); });
+      items.forEach(function (it) {
+        var c = inline(it.s), b = it.b;
+        ['width', 'height', 'x', 'y', 'viewBox', 'preserveAspectRatio', 'role'].forEach(function (a) { c.removeAttribute(a); });
+        c.setAttribute('x', b.x); c.setAttribute('y', b.y); c.setAttribute('width', b.w); c.setAttribute('height', b.h);
+        c.setAttribute('viewBox', b.x + ' ' + b.y + ' ' + b.w + ' ' + b.h);
+        c.setAttribute('overflow', 'visible');
+        out.push(ser.serializeToString(c));
+      });
+      out.push('</svg>');
+      return { svg: out.join(''), w: Math.ceil(W), h: Math.ceil(H) };
+    });
+  }
+  /* save a figure: an element on screen, a function returning one, or a
+     ready { svg, w, h } */
+  function saveFig(src, name, fmt, o) {
+    var F = typeof src === 'function' ? src() : src;
+    if (F && F.nodeType) F = figure(F, o);
+    if (!F || !F.svg) { UI.toast('Nothing to save.'); return; }
+    var svg = /^<\?xml/.test(F.svg) ? F.svg : '<?xml version="1.0" encoding="UTF-8"?>\n' + F.svg;
+    if (fmt === 'svg') { UI.saveFile(safe(name) + '.svg', svg, 'image/svg+xml'); return; }
+    UI.plot.svgToPng(F.svg, F.w, F.h, 3).then(function (b) { return b ? UI.plot.pngDpi(b, F.w * 3) : null; })
+      .then(function (b) { if (b) UI.saveFile(safe(name) + '.png', b, 'image/png'); else UI.toast('Could not make the picture.'); });
+  }
+
+  /* ---------------- tables ---------------- */
+  var NUM = /^([+\-±]?)\s*(\d+(?:\.\d+)?(?:e[+\-]?\d+)?)(?:\s?([kMG]))?\s*(%|×|ppm|s|min|Da)?$/;
+  function readNum(t) {
+    var m = NUM.exec(t.replace(/[\u2212\u2012\u2013]/g, '-').replace(/[\u00a0\u2009\u202f]/g, ' ').trim());
+    if (!m) return null;
+    var v = parseFloat(m[2]) * ({ k: 1e3, M: 1e6, G: 1e9 }[m[3]] || 1);
+    return { v: m[1] === '-' ? -v : v, unit: m[4] || '', dec: decOf(m[2], m[3]) };
+  }
+  /* the decimals a number is shown with (none known for 1.2e5 or 3.4 k) */
+  function decOf(num, mult) {
+    if (mult || /e/i.test(num)) return null;
+    var i = num.indexOf('.');
+    return i < 0 ? 0 : num.length - i - 1;
+  }
+  function textOf(el) {
+    var c = el.cloneNode(true);
+    UI.$$('.dl-btns, input, select, button:not(.linkish), title, .sr-only', c).forEach(function (x) { x.remove(); });
+    UI.$$('div, p, br, .pg, .nm, .chip, .cc', c).forEach(function (x) { x.insertAdjacentText('beforebegin', ' · '); });
+    return c.textContent.replace(/\s+/g, ' ').replace(/^(\s*·\s*)+|(\s*·\s*)+$/g, '').replace(/(\s*·\s*){2,}/g, ' · ').replace(/[▲▼]/g, '').trim();
+  }
+  function cellVal(c) {
+    var dv = c.getAttribute('data-v'), sd = c.getAttribute('data-sd');
+    if (dv !== null) {
+      var o = dv === '' ? { v: null } : isNaN(+dv) ? { t: dv } : { v: +dv, unit: '' };
+      if (sd !== null) o.sd = sd === '' ? null : +sd;
+      /* the exact value, shown on screen with so many decimals */
+      if (o.v !== null && o.v !== undefined) { var sh = /[+\-]?(\d+(?:\.\d+)?(?:e[+\-]?\d+)?)(\s?[kMG](?![a-z]))?/i.exec(textOf(c)); o.dec = sh ? decOf(sh[1], sh[2] && sh[2].trim()) : null; }
+      return o;
+    }
+    var t = textOf(c);
+    if (t === '–' || t === '-') return { v: null };
+    var n = readNum(t);
+    return n ? n : { t: t };
+  }
+  /* a sheet from a table on screen: its last heading row names the columns;
+     rows with one message cell are left out; empty columns are dropped */
+  function sheetOf(table, name, note) {
+    var hr = table.tHead && table.tHead.rows.length ? table.tHead.rows[table.tHead.rows.length - 1] : null, heads = [];
+    if (hr) Array.prototype.forEach.call(hr.cells, function (c) {
+      var lab = c.getAttribute('data-x') || textOf(c);
+      for (var k = 0; k < (c.colSpan || 1); k++) heads.push(k ? lab + ' ' + (k + 1) : lab);
+    });
+    var rows = [];
+    Array.prototype.forEach.call(table.tBodies, function (tb) {
+      Array.prototype.forEach.call(tb.rows, function (tr) {
+        if (tr.cells.length === 1 && (tr.cells[0].classList.contains('empty') || tr.cells[0].colSpan > 1 && !tr.classList.contains('sect'))) return;
+        var row = [];
+        Array.prototype.forEach.call(tr.cells, function (c) { row.push(cellVal(c)); for (var k = 1; k < (c.colSpan || 1); k++) row.push({ v: null }); });
+        rows.push(row);
+      });
+    });
+    var n = Math.max(heads.length, rows.reduce(function (m, r) { return Math.max(m, r.length); }, 0)), cols = [];
+    for (var i = 0; i < n; i++) {
+      var units = {}, nums = 0, texts = 0, maxLen = 0, dec = -1;
+      rows.forEach(function (r) {
+        var x = r[i]; if (!x) return;
+        if (x.v !== undefined && x.v !== null) {
+          nums++; units[x.unit || ''] = 1;
+          maxLen = Math.max(maxLen, (x.dec >= 0 ? x.v.toFixed(Math.min(4, x.dec)) : String(x.v)).length);
+          dec = dec === null || x.dec === null || x.dec === undefined ? null : Math.max(dec, x.dec);
+        } else if (x.t) { texts++; maxLen = Math.max(maxLen, x.t.length); }
+      });
+      var lab = heads[i] || '';
+      if (!nums && !texts) continue;                           /* nothing to show (dots, buttons) */
+      var uk = Object.keys(units), unit = uk.length === 1 && uk[0] ? uk[0] : '';
+      if (unit && lab.indexOf(unit) < 0) lab += ' (' + unit + ')';
+      (function (ci, mixedUnits) {
+        cols.push({ label: lab || 'Column ' + (ci + 1), width: Math.max(8, Math.min(60, Math.max(lab.length, maxLen) + 2)),
+          fmt: nums && !mixedUnits && dec !== null && dec >= 0 ? ['0', '0.0', '0.00', '0.000', '0.0000'][Math.min(4, dec)] : undefined,
+          get: function (r) { var x = r[ci]; if (!x) return null; if (x.v !== undefined) return x.v === null ? null : (mixedUnits && x.unit ? x.v + ' ' + x.unit : x.v); return x.t; } });
+        /* a spread given with the values (a group's SD) gets a column of its own */
+        if (rows.some(function (r) { return r[ci] && r[ci].sd !== undefined; }))
+          cols.push({ label: (lab || 'Column ' + (ci + 1)) + ' SD', width: 10, fmt: cols[cols.length - 1].fmt, get: function (r) { var x = r[ci]; return x && x.sd !== undefined ? x.sd : null; } });
+      })(i, uk.length > 1);
+    }
+    return { name: String(name || 'Table').replace(/[\[\]:*?\/\\]/g, ' ').slice(0, 31), cols: cols, rows: rows, note: note };
+  }
+  /* save a table: an element, a function returning one, or sheets ready-made */
+  function saveTable(src, name, note) {
+    var T = typeof src === 'function' ? src() : src;
+    var sheets = Array.isArray(T) ? T : T && T.nodeType ? [sheetOf(T, sheetName(name), note)] : null;
+    if (!sheets || !sheets.length) { UI.toast('Nothing to save.'); return; }
+    UI.saveFile(safe(name) + '.xlsx', UI.files.xlsx(sheets));
+  }
+  function sheetName(name) { var t = String(name || 'Table').split('_'); return (t.length > 1 ? t.slice(1).join(' ') : t[0]).slice(0, 31) || 'Table'; }
+
+  /* ---------------- buttons ---------------- */
+  function btn(label, title, fn) {
+    return h('button', { class: 'btn sm ghost dl-btn', type: 'button', title: title, onclick: function (e) { e.stopPropagation(); fn(); } }, UI.icon('download'), label);
+  }
+  /* o: { fig: element | fn | {svg,w,h}, figOpt, table: element | fn | sheets, name, note } */
+  function buttons(o) {
+    var name = typeof o.name === 'function' ? o.name : function () { return o.name; };
+    var out = [];
+    if (o.table) out.push(btn('Excel', 'Save this table as an Excel sheet, as shown', function () { saveTable(o.table, name(), o.note); }));
+    if (o.fig) out.push(btn('SVG', 'Save this figure as a vector SVG, with a light background', function () { saveFig(o.fig, name(), 'svg', typeof o.figOpt === 'function' ? o.figOpt() : o.figOpt); }),
+                        btn('PNG', 'Save this figure as a picture, three times its size, with a light background', function () { saveFig(o.fig, name(), 'png', typeof o.figOpt === 'function' ? o.figOpt() : o.figOpt); }));
+    return h('span', { class: 'dl-btns' }, out);
+  }
+  function headText(el) { var c = el.cloneNode(true); UI.$$('.dl-btns, .count', c).forEach(function (x) { x.remove(); }); return c.textContent.replace(/\s+/g, ' ').trim(); }
+  /* whether an element holds a figure or a table (icons on buttons do not count) */
+  function hasFig(el) { return Array.prototype.some.call(el.querySelectorAll('svg, table, canvas'), function (x) { return !x.closest('button'); }); }
+  /* the name of a figure or table: the heading just before it, or the card's */
+  function nameFor(el, base) {
+    var t = '', p = el;
+    for (var k = 0; k < 4 && p && !t; k++) {
+      var s = p.previousElementSibling;
+      for (var j = 0; j < 3 && s && !t; j++) {
+        if (/^H[2-5]$/.test(s.tagName)) t = headText(s);
+        else if (s.classList.contains('dl-row')) j--;          /* our own buttons do not count */
+        else if (!hasFig(s)) {                                  /* a heading row: a heading and a note */
+          var hs = s.querySelector(':scope > h2, :scope > h3, :scope > h4, :scope > h5, :scope > div > h3, :scope > div > h4');
+          if (hs) t = headText(hs);
+        }
+        s = s.previousElementSibling;
+      }
+      p = p.parentElement;
+      if (!p || !p.classList) break;
+      /* the card it sits in, by its heading above it; never a heading further away */
+      if (p.classList.contains('card')) { var hh = p.querySelector('h3, h4'); if (!t && hh && hh.compareDocumentPosition(el) & 4) t = headText(hh); break; }
+      if (p.tagName === 'SECTION' || p.classList.contains('ws-scroll') || p.classList.contains('drawer-b')) break;
+    }
+    var isTable = el.tagName === 'TABLE' || !!(el.querySelector && el.querySelector('table'));
+    var isStruct = el.classList.contains('struct-fig') || el.classList.contains('struct-box') || !!(el.querySelector && el.querySelector('.struct-box'));
+    return (base ? base + '_' : '') + (t || (isTable ? 'table' : isStruct ? 'structure' : 'figure'));
+  }
+  /* the buttons go into the heading just before, or on a row of their own */
+  function place(anchor, bar) {
+    var prev = anchor.previousElementSibling;
+    if (prev && /^H[3-5]$/.test(prev.tagName) && !prev.querySelector('.dl-btns')) { prev.classList.add('dl-head'); prev.appendChild(bar); return; }
+    anchor.parentNode.insertBefore(h('div', { class: 'dl-row' }, bar), anchor);
+  }
+  /* base: the start of the file names (a sample's name), or a function giving it */
+  function attach(root, base) {
+    if (!root || !root.querySelectorAll) return;
+    function nameOf(anchor) { return function () { return nameFor(anchor, typeof base === 'function' ? base() : base); }; }
+    var figs = UI.$$('.bars', root).concat(UI.$$('svg.plot', root).filter(function (s) { return !s.closest('.bars'); }), UI.$$('.struct-box > svg', root));
+    figs.forEach(function (el) {
+      if (el.hasAttribute('data-dl') || el.closest('[data-dl-skip]') || !el.parentNode) return;
+      el.setAttribute('data-dl', '');
+      var anchor = el.parentElement && el.parentElement.classList.contains('struct-box') ? el.closest('.struct-fig') || el.parentElement : el.parentElement && el.parentElement.classList.contains('chart-scroll') ? el.parentElement : el;
+      place(anchor, buttons({ fig: el, name: nameOf(anchor) }));
+    });
+    UI.$$('table.tbl', root).forEach(function (t) {
+      if (t.hasAttribute('data-dl') || t.closest('[data-dl-skip]')) return;
+      t.setAttribute('data-dl', '');
+      var anchor = t.closest('.tbl-wrap') || t;
+      if (!anchor.parentNode) return;
+      place(anchor, buttons({ table: t, name: nameOf(anchor) }));
+    });
+  }
+  /* attach now, and to whatever is added later (results of a search, a
+     suggestion drawn on request) */
+  function watch(root, base) {
+    if (!root || root.__dlWatch) { attach(root, base); return; }
+    attach(root, base);
+    if (typeof MutationObserver === 'undefined') return;
+    var pend = false;
+    root.__dlWatch = new MutationObserver(function () {
+      if (pend) return;
+      pend = true;
+      requestAnimationFrame(function () { pend = false; attach(root, root.__dlBase || base); });
+    });
+    root.__dlWatch.observe(root, { childList: true, subtree: true });
+  }
+  return { figure: figure, saveFig: saveFig, sheetOf: sheetOf, saveTable: saveTable, buttons: buttons, attach: attach, watch: watch, safe: safe };
 })();
 
 /* ---- u03_struct.js ---- */
@@ -22177,7 +22478,7 @@ var APP = (function () {
   var LABELS = { home: 'Home', analyse: 'Analyse', compare: 'Compare', structure: 'Structure', library: 'Library', guide: 'Guide' };
   var DEFAULT_SETTINGS = { profile: 'auto', reduction: 'auto', fdr: 0.01, maxOligomer: '', tol: 'auto', ms2: true, uv: true, rt0: '', rt1: '', focused: true, refs: true,
                            autoLibs: false, polarity: 'auto' };
-  var NAME = 'MuroSense', VERSION = '3.17';
+  var NAME = 'MuroSense', VERSION = '3.18';
 
   var A = {
     NAME: NAME, VERSION: VERSION, runs: [], current: null, view: 'home', views: {},
@@ -23359,7 +23660,10 @@ APP.views.analyse = (function () {
     else if (ui.tab === 'lookup') el = T.lookup(run);
     else if (ui.tab === 'quality') el = T.quality(run);
     else el = T.methods(run);
+    var tabName = { profile: 'profile', unexplained: 'unexplained', lookup: 'look_up', quality: 'quality', methods: 'methods' }[ui.tab] || ui.tab;
     body.appendChild(h('div', { class: 'ws-scroll', tabindex: 0, role: 'region', 'aria-label': ui.tab }, el));
+    /* every chart and table here saves as a picture or a sheet */
+    UI.dl.watch(el, function () { return run.name + '_' + tabName; });
   }
 
   /* ---------------- chromatogram ---------------- */
@@ -23454,9 +23758,16 @@ APP.views.analyse = (function () {
       UI.$$('button', seg).forEach(function (b, i) { b.setAttribute('aria-pressed', i === 0 ? 'true' : 'false'); });
       fill();
     } }, 'Clear filters');
+    /* the species shown (as filtered and sorted), every column, as a sheet */
+    var shownRows = R.rows;
+    var xlBtn = UI.dl.buttons({ name: function () { return run.name + '_species' + (shownRows.length < R.rows.length ? '_shown' : ''); },
+      table: function () {
+        return [{ name: 'Species', cols: APP.exports.speciesCols(R), rows: shownRows,
+          note: [run.name + ': ' + (shownRows.length < R.rows.length ? shownRows.length + ' of ' + R.rows.length + ' species, as filtered on screen' : 'all ' + R.rows.length + ' species') + ' (MuroSense)'] }];
+      } });
     body.appendChild(h('div', { class: 'filters', style: { flex: 'none' } }, search, seg,
       h('label', { class: 'check', title: 'Only species whose fragments in the high-energy channel support the structure (p < 0.01)' }, ms2c, 'MS/MS-supported'),
-      h('span', { class: 'row', style: { gap: '10px', 'flex-wrap': 'nowrap' } }, msCut.el, uvCut ? uvCut.el : null), h('span', { class: 'spacer' }), count, clearBtn));
+      h('span', { class: 'row', style: { gap: '10px', 'flex-wrap': 'nowrap' } }, msCut.el, uvCut ? uvCut.el : null), h('span', { class: 'spacer' }), count, clearBtn, xlBtn));
     var cols = [
       { key: 'idx', label: '#', num: true },
       { key: 'short', label: 'Structure' },
@@ -23490,6 +23801,7 @@ APP.views.analyse = (function () {
       var k = ui.sort.key, d = ui.sort.dir;
       var get = function (r) { return k === 'z' ? r.charges[0] : k === 'q' ? r.q : r[k]; };
       rows.sort(function (a, b) { var x = get(a), y = get(b); if (typeof x === 'string') return d * x.localeCompare(y); return d * ((x || 0) - (y || 0)); });
+      shownRows = rows;
       UI.clear(tbody);
       count.textContent = rows.length === R.rows.length ? UI.plural(rows.length, 'species', 'species') : rows.length + ' of ' + R.rows.length + ' species';
       var cut = (ui.msMin ? 'MS ≥ ' + ui.msMin + '%' : '') + (ui.msMin && R.uv && ui.uvMin ? ', ' : '') + (R.uv && ui.uvMin ? 'UV ≥ ' + ui.uvMin + '%' : '');
@@ -23648,6 +23960,13 @@ APP.tabs = (function () {
   /* ---------------- unexplained ---------------- */
   var unexMode = null, unexSort = { key: 'area', dir: -1 };
   function isMuro(u) { return !!(u.gen && (u.gen.y || u.gen.oxo)); }
+  /* the fragmentation signature in words, for a sheet: the dots on screen */
+  function sigText(g) {
+    var t = [];
+    if (g && g.y) t.push('GlcNAc loss');
+    if (g && g.oxo) t.push('oxonium ion');
+    return t.length ? t.join(' + ') : 'none';
+  }
   function unexplained(run) {
     var R = run.result, all = R.unidentified || [];
     var tot = R.totalArea || 1;
@@ -23934,7 +24253,7 @@ APP.tabs = (function () {
       h('td', { class: 'num' }, UI.fx(u.rt, 2)),
       h('td', { class: 'nowrap' }, u.charges.join(', ')),
       h('td', { class: 'num' }, UI.pct(u.area / tot * 100, 2)),
-      h('td', { class: 'nowrap' }, h('span', { class: 'ev-dots', title: 'GlcNAc loss / oxonium co-eluting in the high-energy channel' }, h('i', { class: u.gen && u.gen.y ? 'on' : '' }), h('i', { class: u.gen && u.gen.oxo ? 'on' : '' })),
+      h('td', { class: 'nowrap', 'data-v': sigText(u.gen) }, h('span', { class: 'ev-dots', title: 'GlcNAc loss / oxonium co-eluting in the high-energy channel' }, h('i', { class: u.gen && u.gen.y ? 'on' : '' }), h('i', { class: u.gen && u.gen.oxo ? 'on' : '' })),
         u.decoy ? h('span', { class: 'chip', style: { 'margin-left': '6px' }, title: 'Its best match was a decoy structure' }, 'decoy match') : null,
         u.gen && u.gen.nuc ? h('span', { class: 'chip uv', style: { 'margin-left': '6px' }, title: 'UMP/UDP/uracil ions co-elute: a nucleotide precursor?' }, 'nucleotide') : null),
       h('td', { class: 'hint' }, u.contam ? [h('span', { class: 'chip warn', title: 'Likely source: ' + u.contam.source }, 'contaminant'), ' ', h('b', null, u.contam.name), u.contam.ion ? ' ' + u.contam.ion : '',
@@ -23992,7 +24311,7 @@ APP.tabs = (function () {
             h('td', { class: 'num' }, UI.fx(x.rt, 2)),
             h('td', null, x.charges.join(', ')),
             h('td', { class: 'num' }, UI.pct(x.pctId, 2)),
-            h('td', null, h('span', { class: 'ev-dots' }, h('i', { class: x.gen && x.gen.y ? 'on' : '' }), h('i', { class: x.gen && x.gen.oxo ? 'on' : '' }))),
+            h('td', { 'data-v': sigText(x.gen) }, h('span', { class: 'ev-dots' }, h('i', { class: x.gen && x.gen.y ? 'on' : '' }), h('i', { class: x.gen && x.gen.oxo ? 'on' : '' }))),
             h('td', null, row ? h('span', { class: 'chip good' }, 'identified #' + (row.idx + 1) + (row.name !== t.name ? ' as ' + row.short : '')) : h('span', { class: 'chip warn', title: 'Present at this mass but not reported at the chosen FDR; check its evidence before relying on it' }, 'not reported'))));
         });
       });
@@ -24304,7 +24623,7 @@ APP.tabs = (function () {
         h('div', { class: 'row', style: { gap: '8px' } }, qcChip(Q.overall.s, QC_WORD[Q.overall.s] + (Q.overall.score !== null ? ' · ' + Q.overall.score + '/100' : '')))),
       h('div', { class: 'card-b stack', style: { gap: '10px' } },
         h('div', { class: 'tbl-wrap' }, h('table', { class: 'tbl qc-tbl' },
-          h('thead', null, h('tr', null, h('th', null, 'Check'), h('th', null, 'Value'), h('th', null, ''), h('th', null, 'What it means'))),
+          h('thead', null, h('tr', null, h('th', null, 'Check'), h('th', null, 'Value'), h('th', { 'data-x': 'Grade' }, ''), h('th', null, 'What it means'))),
           h('tbody', null, QC.filter(function (q) { return q.key !== 'shift'; }).map(function (q) {
             var c = Q[q.key];
             return h('tr', null, h('td', null, h('b', null, q.label)), h('td', { class: 'num' }, c.text), h('td', null, qcChip(c.s)), h('td', { class: 'small muted' }, q.tip));
@@ -24345,7 +24664,13 @@ APP.drawer = (function () {
       }
     });
   }
+  /* the start of a saved figure's or table's name: the sample, then the species or feature */
+  function dlBase() {
+    if (!cur) return 'MuroSense';
+    return cur.run.name + '_' + (cur.row ? '#' + (cur.row.idx + 1) + '_' + cur.row.short : cur.feature ? UI.fx(cur.feature.mass, 4) + 'Da_' + UI.fx(cur.feature.rt, 2) + 'min' : '');
+  }
   function openPanel() {
+    UI.dl.watch(body, dlBase);
     lastFocus = document.activeElement;
     scrim.hidden = false; panel.hidden = false;
     requestAnimationFrame(function () { scrim.classList.add('on'); panel.classList.add('on'); panel.focus(); });
@@ -24518,7 +24843,7 @@ APP.drawer = (function () {
   /* ---------------- an unexplained feature ---------------- */
   function openFeature(run, u) {
     ensure();
-    cur = { run: run, row: null };
+    cur = { run: run, row: null, feature: u };
     var R = run.result, ev = u.ev || {};
     header(UI.fx(u.mass, 4) + ' Da at ' + UI.fx(u.rt, 2) + ' min', 'unexplained feature', false);
     UI.clear(body);
@@ -25008,9 +25333,68 @@ APP.views.compare = (function () {
     q: '', spCls: 'all', spMin: 0, spSort: { key: 'mean', dir: -1 }, spSel: {}, spStack: false,
     cols: 'samples',                       /* 'groups': one column per group, the mean of its samples */
     relM: 'value', relS: 'value',          /* the metric and species tables: values, 'diff' or 'ratio' to the reference */
-    qcShow: 'all'                          /* the quality table: every sample, or 'flag' those to check */
+    qcShow: 'all',                         /* the quality table: every sample, or 'flag' those to check */
+    qcSort: null,                          /* { key, dir }: the quality table sorted on a column (your order when null) */
+    tab: UI.store.get('cmpTab', 'qc')      /* the section shown: one tab, or 'all' */
   };
   var boxes = {};
+  /* ---------------- sections and their tabs ----------------
+     Each section draws into its own box; the tab bar shows one section (or
+     all of them) and stays at the top while the page scrolls. A section not
+     on screen is only marked out of date, and drawn when its tab opens. */
+  var TABS = [['qc', 'Quality', 'The quality checklist of every sample: untick one to leave it out of the other sections'],
+              ['stack', 'Chromatograms', 'Stacked chromatograms'], ['pg', 'Total PG', 'Total peptidoglycan from the UV'],
+              ['metrics', 'Profile metrics', 'The profile metrics and their chart'], ['heat', 'Heat map'], ['species', 'Species', 'Species abundances'],
+              ['unex', 'Unexplained', 'Unexplained features across the samples'], ['all', 'All', 'Every section, one under another']];
+  var TAB_BOXES = { qc: ['qc'], stack: ['stackc'], pg: ['pg'], metrics: ['table', 'chart'], heat: ['heat'], species: ['species'], unex: ['unex'] };
+  var ORDER = ['qc', 'stackc', 'pg', 'table', 'chart', 'heat', 'species', 'unex'];
+  var dirty = {}, tabWrap = null, secsEl = null, selTimer = null;
+  function tabBoxes(t) { return t === 'all' ? ORDER : TAB_BOXES[t] || ['qc']; }
+  function shown(k) { return !!boxes[k] && tabBoxes(st.tab).indexOf(k) >= 0; }
+  function renderer(k) { return { qc: renderQuality, stackc: renderStack, pg: renderPG, table: renderTable, chart: renderChart, heat: renderHeat, species: renderSpecies, unex: renderUnex }[k]; }
+  /* whether a section can be skipped now: not on screen (it is drawn when
+     its tab opens), or nothing ticked (it says so, once) */
+  function skip(k) {
+    if (!boxes[k]) return true;
+    if (!shown(k)) { dirty[k] = true; return true; }
+    dirty[k] = false;
+    if (k !== 'qc' && !chosen().length) {
+      UI.clear(boxes[k]);
+      if (k === tabBoxes(st.tab).filter(function (x) { return x !== 'qc'; })[0])
+        boxes[k].appendChild(h('div', { class: 'card' }, h('div', { class: 'empty' }, 'Every sample is unticked: tick samples above, or in the Quality checklist.')));
+      return true;
+    }
+    return false;
+  }
+  function showTab(t, initial) {
+    if (!TAB_BOXES[t] && t !== 'all') t = 'qc';
+    st.tab = t; UI.store.set('cmpTab', t);
+    /* nothing ticked: the message stands once, in the first section shown */
+    if (!chosen().length) ORDER.forEach(function (k) { if (k !== 'qc') dirty[k] = true; });
+    if (tabWrap) UI.$$('[role=tab]', tabWrap).forEach(function (b) { b.setAttribute('aria-selected', b.getAttribute('data-tab') === t ? 'true' : 'false'); });
+    ORDER.forEach(function (k) { if (boxes[k]) boxes[k].hidden = !shown(k); });
+    tabBoxes(t).forEach(function (k) { if (dirty[k]) renderer(k)(); });
+    /* scrolled past the tabs: the new section starts just under them */
+    if (!initial && secsEl && tabWrap) {
+      var main = root.closest('main');
+      if (main) {
+        var mTop = main.getBoundingClientRect().top, sTop = secsEl.getBoundingClientRect().top, bh = tabWrap.offsetHeight;
+        if (sTop < mTop + bh) main.scrollTop += sTop - mTop - bh;
+      }
+    }
+  }
+  /* the ticked samples changed (on the chips or in the quality checklist):
+     the chips, the count and the checklist follow at once, the other
+     sections a moment later (or when their tab opens) */
+  function selChanged() {
+    var runs = done(), nSel = runs.filter(function (r) { return sel[r.id]; }).length;
+    UI.$$('.samp-pick [data-id]', root).forEach(function (lab) { var c = lab.querySelector('input'); if (c) c.checked = !!sel[lab.getAttribute('data-id')]; });
+    var cnt = UI.$('.samp-count', root); if (cnt) cnt.textContent = nSel + ' of ' + runs.length;
+    syncQcRows();
+    ORDER.forEach(function (k) { if (k !== 'qc') dirty[k] = true; });
+    clearTimeout(selTimer);
+    selTimer = setTimeout(function () { tabBoxes(st.tab).forEach(function (k) { if (k !== 'qc' && dirty[k]) renderer(k)(); }); }, 250);
+  }
   var OLIGO = [['1', 'Monomers', '--glc'], ['2', 'Dimers', '--accent'], ['3', 'Trimers', '--mur'], ['4+', '≥ Tetramers', '--uv']];
   var SERIES = ['--accent', '--uv', '--mur', '--glc', '--good', '--warn', '--bad', '--ink-2'];
 
@@ -25130,7 +25514,7 @@ APP.views.compare = (function () {
     /* sample picker: tick to compare, drag to reorder */
     var nSel = runs.filter(function (r) { return sel[r.id]; }).length;
     var pick = h('div', { class: 'row samp-pick', style: { gap: '6px' } }, runs.map(function (r) {
-      var c = h('input', { type: 'checkbox', checked: !!sel[r.id], onchange: function () { sel[r.id] = c.checked; render(); } });
+      var c = h('input', { type: 'checkbox', checked: !!sel[r.id], onchange: function () { sel[r.id] = c.checked; selChanged(); } });
       var isRef = A.ref && A.ref.run === r.id;
       return h('label', { class: 'check chip samp', draggable: 'true', 'data-id': r.id, style: { padding: '3px 9px' },
         title: r.name + (r.group ? ' · group ' + r.group : '') + (isRef ? ' · the reference' : '') + ' · drag to change the order' },
@@ -25138,7 +25522,7 @@ APP.views.compare = (function () {
         r.group ? h('span', { class: 'samp-grp' }, r.group) : null, isRef ? h('span', { class: 'samp-ref' }, 'ref') : null);
     }));
     dragChips(pick);
-    function setAll(v) { runs.forEach(function (r) { sel[r.id] = v; }); render(); }
+    function setAll(v) { runs.forEach(function (r) { sel[r.id] = v; }); selChanged(); }
     var seg = h('div', { class: 'seg' }, [['ms', 'From MS'], ['uv', 'From UV']].map(function (o) {
       return h('button', { 'aria-pressed': basis === o[0] ? 'true' : 'false', disabled: o[0] === 'uv' && !hasUV, onclick: function () { basis = o[0]; render(); } }, o[1]);
     }));
@@ -25163,7 +25547,7 @@ APP.views.compare = (function () {
         h('button', { class: 'btn sm', type: 'button', onclick: function () { st.colSort = null; renderAll(); } }, 'Back to your order'));
     }
     root.appendChild(h('div', { class: 'card' },
-      h('div', { class: 'card-h' }, h('h3', null, 'Samples ', h('span', { class: 'muted small' }, nSel + ' of ' + runs.length)),
+      h('div', { class: 'card-h' }, h('h3', null, 'Samples ', h('span', { class: 'muted small samp-count' }, nSel + ' of ' + runs.length)),
         h('div', { class: 'row', style: { gap: '6px', 'flex-wrap': 'wrap' } },
           h('button', { class: 'btn sm', onclick: function () { setAll(true); } }, 'All'),
           h('button', { class: 'btn sm', onclick: function () { setAll(false); } }, 'None'),
@@ -25176,12 +25560,19 @@ APP.views.compare = (function () {
         h('div', { class: 'row small muted', style: { gap: '10px', 'margin-top': '10px', 'flex-wrap': 'wrap' } },
           h('label', { class: 'row', style: { gap: '6px' } }, 'Reference', refSel),
           colSeg ? h('span', { class: 'row', style: { gap: '6px' } }, 'Columns', colSeg) : null,
-          h('span', null, 'Drag a sample to change the order; every section and export follows it.')),
+          h('span', null, 'Drag a sample to change the order; every section and export follows it. Untick a sample to leave it out.')),
         sortNote)));
-    if (!nSel) { root.appendChild(h('div', { class: 'card', style: { 'margin-top': '16px' } }, h('div', { class: 'empty' }, 'Tick at least one sample.'))); return; }
-    boxes.qc = h('div'); boxes.stackc = h('div'); boxes.pg = h('div'); boxes.table = h('div'); boxes.chart = h('div'); boxes.heat = h('div'); boxes.species = h('div'); boxes.unex = h('div');
-    root.appendChild(h('div', { class: 'stack', style: { 'margin-top': '16px' } }, boxes.qc, boxes.stackc, boxes.pg, boxes.table, boxes.chart, boxes.heat, boxes.species, boxes.unex));
-    renderQuality(); renderStack(); renderPG(); renderTable(); renderChart(); renderHeat(); renderSpecies(); renderUnex();
+    /* the sections, under tabs that stay at the top */
+    boxes = {};
+    ORDER.forEach(function (k) { boxes[k] = h('div', { class: 'cmp-sec' }); dirty[k] = true; });
+    var bar = h('div', { class: 'subtabs', role: 'tablist', 'aria-label': 'Sections' }, TABS.map(function (t) {
+      return h('button', { role: 'tab', type: 'button', 'data-tab': t[0], 'aria-selected': st.tab === t[0] ? 'true' : 'false', title: t[2] || null, onclick: function () { showTab(t[0]); } }, t[1]);
+    }));
+    tabWrap = h('div', { class: 'cmp-tabs' }, bar);
+    secsEl = h('div', { class: 'stack cmp-secs' }, ORDER.map(function (k) { return boxes[k]; }));
+    root.appendChild(tabWrap);
+    root.appendChild(secsEl);
+    showTab(st.tab, true);
   }
   /* the sample chips can be dragged into a new order, which every view follows */
   function dragChips(box) {
@@ -25377,7 +25768,10 @@ APP.views.compare = (function () {
     return set;
   }
   /* the figure follows the species table when names are taken from it */
-  function stackFollow(kind) { if (sk.nameBy === kind && boxes.stackDraw) boxes.stackDraw(); }
+  function stackFollow(kind) {
+    if (sk.nameBy !== kind) return;
+    if (shown('stackc') && boxes.stackDraw) boxes.stackDraw(); else dirty.stackc = true;
+  }
   /* the sample the others are aligned to and compared with (the first
      sample until one is chosen) */
   function refIdx(runs) {
@@ -25721,8 +26115,8 @@ APP.views.compare = (function () {
       foot: [h('button', { class: 'btn ghost', type: 'button', onclick: function () { Md.close(); } }, 'Cancel'), go] });
   }
   function renderStack() {
+    if (skip('stackc')) return;
     var box = boxes.stackc; UI.clear(box);
-    if (!chosen().length) return;
     /* the samples drawn: those chosen, bar any clicked away on the figure */
     function visible() { return chosen().filter(function (r) { return !sk.hiddenRuns[r.id]; }); }
     var runs = visible(), D = stackData(runs.length ? runs : chosen());
@@ -25836,12 +26230,61 @@ APP.views.compare = (function () {
   /* ---------------- quality checklist ----------------
      Every sample's checks side by side (APP.tabs.qualityChecks), to look at
      before drawing conclusions from it: a green dot is good, amber is worth
-     a look, red is poor. Species found and peak width are judged against
-     the median sample, total PG and the time shift against the reference.
-     A sample's name opens its Quality tab in Analyse. */
+     a look, red is poor. Every sample is listed, ticked or not: unticking
+     one here (or on its chip) leaves it out of every other section and the
+     exports. A heading sorts the table on its column (worst first, then
+     best first, then your order again); that order stays in this table.
+     Species found and peak width are judged against the median of all the
+     samples, total PG and the time shift against the reference. A sample's
+     name opens its Quality tab in Analyse. */
+  var QC_LOWER = { mass: 1, contam: 1, width: 1, sat: 1, shift: 1, red: 1 };                /* lower is better */
+  var QC_UNIT = { mass: 'ppm', expl: '%', contam: '% of MS', species: 'n', width: 's', uvsn: '', uvfit: '%', pg: '% of reference or median', sat: 'species', red: '', shift: 'min' };
+  var QC_FMT = { mass: '0.00', expl: '0.0', contam: '0.00', species: '0', width: '0.0', uvsn: '0', uvfit: '0.0', pg: '0.0', sat: '0', shift: '0.00' };
+  function qcKey(r, q, key) {
+    if (key === 'name') return r.name;
+    if (key === 'overall') return q.overall.score;
+    var x = q[key];
+    if (!x || x.s === 'none') return null;
+    if (x.v !== null && x.v !== undefined && isFinite(x.v)) return key === 'shift' ? Math.abs(x.v) : x.v;
+    var lower = QC_LOWER[key];
+    return { good: lower ? -1e9 : 1e9, check: lower ? 1e9 : -1e9, poor: lower ? 2e9 : -2e9 }[x.s];
+  }
+  /* the checklist as a sheet: each check's value (with its unit) and grade */
+  function qcSheet(items) {
+    var cols = [{ label: 'Sample', get: function (x) { return x.r.name; }, width: 30 }, { label: 'Original name (file)', get: function (x) { return x.r.origName || x.r.name; }, width: 34 },
+      { label: 'Group', get: function (x) { return x.r.group || ''; }, width: 12 }, { label: 'In the comparison', get: function (x) { return sel[x.r.id] ? 'yes' : 'no'; }, width: 11 },
+      { label: 'Overall', get: function (x) { return T.QC_WORD[x.q.overall.s]; }, width: 9 }, { label: 'Score (of 100)', get: function (x) { return x.q.overall.score; }, fmt: '0', width: 8 },
+      { label: 'To look at', get: function (x) { return x.q.overall.flags.join(', '); }, width: 32 }];
+    T.QC.forEach(function (c) {
+      var u = QC_UNIT[c.key];
+      cols.push({ label: c.label + (u ? ' (' + u + ')' : ''), fmt: QC_FMT[c.key], width: 14, get: function (x) {
+        var y = x.q[c.key];
+        if (!y || y.s === 'none') return null;
+        if (c.key === 'red' || y.v === null || y.v === undefined || !isFinite(y.v)) return y.text;
+        return c.key === 'width' ? y.v * 60 : y.v;
+      } }, { label: c.label + ': grade', width: 9, get: function (x) { var y = x.q[c.key]; return y ? T.QC_WORD[y.s] : ''; } });
+    });
+    cols.push({ label: 'Signal explained: share of', width: 22, get: function (x) { var y = x.q.expl; return y && /all MS/.test(y.text) ? 'all MS signal' : 'muropeptide-like signal'; } },
+      { label: 'UV fit R²', fmt: '0.000', width: 9, get: function (x) { var U = x.r.result.uv; return U && isFinite(U.r2) ? U.r2 : null; } });
+    return { name: 'Quality', note: ['Quality checklist of each sample (MuroSense). ' + T.QC.map(function (c) { return c.label + ': ' + c.tip; }).join(' ')], cols: cols, rows: items };
+  }
+  /* the checklist's tick boxes follow the chips */
+  function syncQcRows() {
+    var tb = UI.$('.qc-grid tbody', root); if (!tb) return;
+    var all = [], on = 0;
+    UI.$$('tr[data-id]', tb).forEach(function (tr) {
+      var id = tr.getAttribute('data-id'), c = tr.querySelector('input[type=checkbox]');
+      if (c) c.checked = !!sel[id];
+      tr.classList.toggle('off', !sel[id]);
+      all.push(id); if (sel[id]) on++;
+    });
+    var hc = UI.$('.qc-grid thead input[type=checkbox]', root);
+    if (hc) { hc.checked = all.length > 0 && on === all.length; hc.indeterminate = on > 0 && on < all.length; }
+  }
   function renderQuality() {
-    var box = boxes.qc; if (!box) return; UI.clear(box);
-    var runs = chosen();
+    if (skip('qc')) return;
+    var box = boxes.qc; UI.clear(box);
+    var runs = done();
     if (!runs.length) return;
     var shifts = runs.length > 1 ? rtShifts(runs, refIdx(runs)) : null;
     var Q = runs.map(function (r, i) { return T.qualityChecks(r, { runs: runs, shift: shifts ? shifts[i] : null }); });
@@ -25849,31 +26292,65 @@ APP.views.compare = (function () {
     Q.forEach(function (q) { n[q.overall.s]++; });
     /* only the checks that apply to some sample (no UV checks without UV) */
     var checks = T.QC.filter(function (c) { return Q.some(function (q) { return q[c.key] && q[c.key].s !== 'none'; }); });
-    var head = h('tr', null, h('th', { class: 'stick' }, 'Sample'), h('th', { title: 'The worst check decides: good, check or poor; the score weighs good as 1 and check as ½ over the checks that apply' }, 'Overall'),
-      checks.map(function (c) { return h('th', { title: c.tip }, c.label); }));
+    /* the rows: in your order, or sorted on a column; all, or those to check */
+    var idx = runs.map(function (r, i) { return i; }).filter(function (i) { return st.qcShow !== 'flag' || Q[i].overall.s !== 'good'; });
+    if (st.qcSort) {
+      var key = st.qcSort.key, d = st.qcSort.dir;
+      idx.sort(function (a, b) {
+        var x = qcKey(runs[a], Q[a], key), y = qcKey(runs[b], Q[b], key);
+        if (x === null && y === null) return a - b;
+        if (x === null) return 1;
+        if (y === null) return -1;
+        return (typeof x === 'string' ? x.localeCompare(y, undefined, { numeric: true }) : x - y) * d || a - b;
+      });
+    }
+    function sortTh(key, label, tip, cls) {
+      var on = st.qcSort && st.qcSort.key === key, worst = key === 'name' ? 1 : QC_LOWER[key] ? -1 : 1;
+      return h('th', { class: 'sortable' + (cls ? ' ' + cls : ''), 'data-x': label, 'aria-sort': on ? (st.qcSort.dir > 0 ? 'ascending' : 'descending') : null,
+        title: (tip ? tip + ' ' : '') + (key === 'name' ? 'Click to sort by name; again for the reverse; a third time for your order.' : 'Click to sort: worst first; again, best first; a third time, your order.'),
+        onclick: function () {
+          if (!on) st.qcSort = { key: key, dir: worst }; else if (st.qcSort.dir === worst) st.qcSort.dir = -worst; else st.qcSort = null;
+          renderQuality();
+        } }, label);
+    }
+    var headCb = h('input', { type: 'checkbox', 'aria-label': 'Tick or untick every sample listed', title: 'Tick or untick every sample listed (with To check: every sample to check)',
+      onchange: function () {
+        var on = idx.every(function (i) { return sel[runs[i].id]; });
+        idx.forEach(function (i) { sel[runs[i].id] = !on; });
+        selChanged();
+      } });
+    var head = h('tr', null, h('th', { class: 'stick tickcol' }, headCb), sortTh('name', 'Sample', '', 'stick2'),
+      sortTh('overall', 'Overall', 'The worst check decides: good, check or poor; the score weighs good as 1 and check as ½ over the checks that apply.'),
+      checks.map(function (c) { return sortTh(c.key, c.label, c.tip); }));
     var tb = h('tbody');
-    runs.forEach(function (r, i) {
-      var q = Q[i];
-      if (st.qcShow === 'flag' && q.overall.s === 'good') return;
-      tb.appendChild(h('tr', null,
-        h('td', { class: 'stick' }, h('button', { class: 'linkish', type: 'button', title: 'Open ' + r.name + ' in Analyse, at its Quality tab',
+    idx.forEach(function (i) {
+      var r = runs[i], q = Q[i];
+      var cb = h('input', { type: 'checkbox', checked: !!sel[r.id], 'aria-label': 'Include ' + r.name + ' in the comparison',
+        onchange: function () { sel[r.id] = cb.checked; selChanged(); } });
+      tb.appendChild(h('tr', { 'data-id': r.id, class: sel[r.id] ? '' : 'off' },
+        h('td', { class: 'stick tickcol' }, cb),
+        h('td', { class: 'stick2' }, h('button', { class: 'linkish', type: 'button', title: 'Open ' + r.name + ' in Analyse, at its Quality tab',
           onclick: function () { A.current = r.id; A.show('analyse'); A.emit('runs'); setTimeout(function () { if (APP.views.analyse.showTab) APP.views.analyse.showTab('quality'); }, 0); } },
-          h('i', { class: 'swatch', style: { background: colorOf[r.id] } }), r.name)),
+          h('i', { class: 'swatch', style: { background: colorOf[r.id] } }), r.name), isRefCol(r) ? [' ', h('span', { class: 'samp-ref' }, 'ref')] : null),
         h('td', { title: q.overall.flags.length ? 'To look at: ' + q.overall.flags.join(', ') : 'Every check is good' },
           T.qcChip(q.overall.s, T.QC_WORD[q.overall.s] + (q.overall.score !== null ? ' · ' + q.overall.score : ''))),
         checks.map(function (c) { var x = q[c.key]; return h('td', { class: 'qc-cell qc-' + x.s, title: c.label + ': ' + x.text + ' (' + T.QC_WORD[x.s].toLowerCase() + ')' }, x.text); })));
     });
-    if (!tb.children.length) tb.appendChild(h('tr', null, h('td', { colspan: checks.length + 2, class: 'empty' }, 'Every sample passes every check.')));
+    if (!idx.length) tb.appendChild(h('tr', null, h('td', { colspan: checks.length + 3, class: 'empty' }, 'Every sample passes every check.')));
     var showSeg = segBtns([['all', 'All samples'], ['flag', 'To check']], st.qcShow, function (v) { st.qcShow = v; renderQuality(); }, 'Show');
+    var sortNote = st.qcSort ? h('button', { class: 'btn sm ghost', type: 'button', title: 'Sorting orders this table only; your sample order stays', onclick: function () { st.qcSort = null; renderQuality(); } }, 'Your order') : null;
+    var xl = UI.dl.buttons({ table: function () { return [qcSheet(idx.map(function (i) { return { r: runs[i], q: Q[i] }; }))]; }, name: 'MuroSense_quality_checklist' });
     box.appendChild(h('div', { class: 'card' },
       h('div', { class: 'card-h' }, h('div', null, h('h3', null, 'Quality checklist'),
-          h('div', { class: 'small muted' }, 'Look here before drawing conclusions from a sample · hover a heading for its thresholds')),
+          h('div', { class: 'small muted' }, 'Look here before drawing conclusions · untick a sample to leave it out of the other sections · click a heading to sort')),
         h('div', { class: 'row', style: { gap: '8px', 'flex-wrap': 'wrap' } },
-          n.good ? T.qcChip('good', n.good + ' good') : null, n.check ? T.qcChip('check', n.check + ' to check') : null, n.poor ? T.qcChip('poor', n.poor + ' poor') : null, showSeg)),
-      h('div', { class: 'tbl-wrap freeze', style: { 'max-height': '46vh' } }, h('table', { class: 'tbl qc-grid' }, h('thead', null, head), tb)),
-      h('p', { class: 'note', style: { padding: '10px 16px' } }, 'Mass accuracy, signal explained, contaminants and the UV checks judge each sample on its own; species found and peak width against the median of the ' + UI.plural(runs.length, 'sample') +
-        ' ticked; total PG against ' + (A.refRuns().length ? 'the reference (' + A.refLabel() + ')' : 'the median sample (choose a reference above to judge against it)') + ', with the low-PG threshold of Total PG below; the time shift against the sample the chromatograms align to. ' +
-        'A sample’s name opens its Quality tab, with the evidence behind each check.')));
+          n.good ? T.qcChip('good', n.good + ' good') : null, n.check ? T.qcChip('check', n.check + ' to check') : null, n.poor ? T.qcChip('poor', n.poor + ' poor') : null, sortNote, showSeg, xl)),
+      h('div', { class: 'tbl-wrap freeze', style: { 'max-height': '58vh' } }, h('table', { class: 'tbl qc-grid' }, h('thead', null, head), tb)),
+      h('p', { class: 'note', style: { padding: '10px 16px' } }, 'Every sample is listed; one unticked here, or on its chip above, is left out of every other section and the exports, and kept here, dimmed, to tick again. ' +
+        'Mass accuracy, signal explained, contaminants and the UV checks judge each sample on its own; species found and peak width against the median of all ' + UI.plural(runs.length, 'sample') +
+        '; total PG against ' + (A.refRuns().length ? 'the reference (' + A.refLabel() + ')' : 'the median sample (choose a reference above to judge against it)') + ', with the low-PG threshold of Total PG; the time shift against the sample the chromatograms align to. ' +
+        'Sorting orders this table only. A sample’s name opens its Quality tab, with the evidence behind each check.')));
+    syncQcRows();
   }
 
   /* ---------------- total PG (UV) ----------------
@@ -25900,7 +26377,8 @@ APP.views.compare = (function () {
   }
   var pgView = 'area';
   function renderPG() {
-    var box = boxes.pg; if (!box) return; UI.clear(box);
+    if (skip('pg')) return;
+    var box = boxes.pg; UI.clear(box);
     var cs = cols(), withUV = cs.filter(function (c) { return pgCol(c) !== null; });
     var card = h('div', { class: 'card' });
     box.appendChild(card);
@@ -25929,19 +26407,36 @@ APP.views.compare = (function () {
     }));
     /* the chart: the area, or the % of the reference (or median) */
     var view = base ? pgView : 'area';
-    var shown = cs.filter(function (c) { return pgCol(c) !== null && !chartOff[c.id]; });
-    var vals = shown.map(function (c) { var v = pgCol(c); return view === 'pct' ? v / base.v * 100 : v; });
-    var errs = shown.map(function (c) { var s0 = pgSD(c); return s0 === null ? null : view === 'pct' ? s0 / base.v * 100 : s0; });
+    var inBars = cs.filter(function (c) { return pgCol(c) !== null && !chartOff[c.id]; });
+    var vals = inBars.map(function (c) { var v = pgCol(c); return view === 'pct' ? v / base.v * 100 : v; });
+    var errs = inBars.map(function (c) { var s0 = pgSD(c); return s0 === null ? null : view === 'pct' ? s0 / base.v * 100 : s0; });
     var marks = !base ? [] : view === 'pct' ? [{ value: 100, label: base.what === 'reference' ? 'ref' : 'median', color: '--ink-2' }, { value: low, label: low + '%', color: '--bad' }] :
       [{ value: base.v, label: base.what === 'reference' ? 'ref' : 'median', color: '--ink-2' }, { value: base.v * low / 100, label: low + '%', color: '--bad' }];
     var host = h('div', { class: 'chart-scroll' });
-    host.appendChild(UI.plot.sampleBars({ samples: shown.map(function (c) { return c.name; }), series: [{ label: view === 'pct' ? 'Total PG, % of ' + base.label : 'Total PG (UV area)', color: '--uv', values: vals, err: errs }],
+    host.appendChild(UI.plot.sampleBars({ samples: inBars.map(function (c) { return c.name; }), series: [{ label: view === 'pct' ? 'Total PG, % of ' + base.label : 'Total PG (UV area)', color: '--uv', values: vals, err: errs }],
       barW: Math.max(14, st.barW), height: 260, unit: view === 'pct' ? '%' : '', vfmt: view === 'pct' ? function (x) { return x.toFixed(0) + '%'; } : T.fmtArea, marks: marks, label: 'Total PG chart',
-      onPick: function (k) { var c = shown[k]; if (c.isGroup) return; A.current = c.id; A.show('analyse'); A.emit('runs'); } }));
+      onPick: function (k) { var c = inBars[k]; if (c.isGroup) return; A.current = c.id; A.show('analyse'); A.emit('runs'); } }));
     var viewSeg = base ? segBtns([['area', 'UV area'], ['pct', '% of ' + (base.what === 'reference' ? 'reference' : 'median')]], view, function (v) { pgView = v; renderPG(); }, 'Show') : null;
+    /* the table as a sheet, with the numbers as they are */
+    function pgSheet() {
+      var bw = base ? (base.what === 'reference' ? 'reference' : 'median') : 'reference';
+      return [{ name: 'Total PG', note: ['Total PG from the UV: the summed UV peak area of the identified muropeptides (absorbance × min, in the file’s units)' + (grouped() ? '; a group’s is the mean of its samples, with their SD' : '') +
+          (base ? '; percentages of ' + (base.what === 'reference' ? 'the reference, ' + base.label : 'the median sample') + '; low below ' + low + '%' : '') + ' (MuroSense)'],
+        cols: [{ label: grouped() ? 'Group or sample' : 'Sample', get: function (c) { return c.name; }, width: 30 },
+               { label: grouped() ? 'Samples' : 'Group', get: function (c) { return c.isGroup ? c.members.map(function (r) { return r.name; }).join(', ') : (c.group || ''); }, width: 24 },
+               { label: 'Total PG (UV area)', get: function (c) { return pgCol(c); }, fmt: '0.000', width: 16 },
+               { label: 'SD', get: function (c) { return pgSD(c); }, fmt: '0.000', width: 10 },
+               { label: 'All UV peaks in the window', get: function (c) { return pgCol(c, 'all'); }, fmt: '0.000', width: 16 },
+               { label: 'Identified share of the UV (%)', get: function (c) { return pgCol(c, 'expl'); }, fmt: '0.0', width: 12 },
+               { label: '% of ' + bw, get: function (c) { var v = pgCol(c); return base && v !== null ? v / base.v * 100 : null; }, fmt: '0.0', width: 11 },
+               { label: 'Low', get: function (c) { var v = pgCol(c); return v === null ? 'no UV' : base && v / base.v * 100 < low ? 'low' : ''; }, width: 7 }],
+        rows: cs }];
+    }
+    var chartBtns = UI.dl.buttons({ fig: function () { return UI.$('.bars', host); }, name: function () { return 'MuroSense_total_PG' + (view === 'pct' ? '_percent' : '_UV_area'); },
+      figOpt: function () { return { title: view === 'pct' && base ? 'Total PG, % of ' + base.label : 'Total PG: UV peak area of the identified muropeptides' }; } });
     card.appendChild(h('div', { class: 'card-h' }, headL,
       h('div', { class: 'row small muted', style: { gap: '8px', 'flex-wrap': 'wrap' } }, h('label', { class: 'row', style: { gap: '6px' } }, 'Low below', thr, '% of ' + (base ? (base.what === 'reference' ? 'the reference' : 'the median') : 'the reference')),
-        nLow ? h('span', { class: 'chip bad' }, nLow + ' low') : null)));
+        nLow ? h('span', { class: 'chip bad' }, nLow + ' low') : null, UI.dl.buttons({ table: pgSheet, name: 'MuroSense_total_PG' }))));
     card.appendChild(h('div', { class: 'card-b stack', style: { gap: '12px' } },
       h('div', { class: 'tbl-wrap', style: { 'max-height': '46vh' } }, h('table', { class: 'tbl pg-tbl' },
         h('thead', null, h('tr', null, h('th', null, grouped() ? 'Group or sample' : 'Sample'), h('th', null, grouped() ? 'Samples' : 'Group'),
@@ -25950,7 +26445,7 @@ APP.views.compare = (function () {
           h('th', { class: 'num', title: 'Share of the UV area in the muropeptide window that the identified species account for' }, 'Identified'),
           h('th', { class: 'num' }, base ? '% of ' + (base.what === 'reference' ? 'reference' : 'median') : '% of reference'),
           h('th', null, ''))), tb)),
-      h('div', { class: 'row', style: { 'justify-content': 'space-between', gap: '8px', 'flex-wrap': 'wrap' } }, h('h4', null, 'Total PG across the ' + (grouped() ? 'groups' : 'samples')), viewSeg),
+      h('div', { class: 'row', style: { 'justify-content': 'space-between', gap: '8px', 'flex-wrap': 'wrap' } }, h('h4', null, 'Total PG across the ' + (grouped() ? 'groups' : 'samples')), h('div', { class: 'row', style: { gap: '8px' } }, viewSeg, chartBtns)),
       host,
       h('p', { class: 'note' }, 'At 205 nm peptide bonds and N-acetyl groups absorb, so a muropeptide’s UV peak area follows its number of disaccharide-peptide units rather than how well it ionises; the summed area of the identified muropeptides is the total PG of the sample, in the absorbance units the file records, times minutes. ' +
         'It compares samples injected the same way (same volume of a digest from the same amount of cells); it is an amount of material, not a count of molecules. ' +
@@ -25964,14 +26459,16 @@ APP.views.compare = (function () {
      it, tinted red for more and blue for less; the reference's own values
      then lead the table. */
   function renderTable() {
+    if (skip('table')) return;
     var box = boxes.table; UI.clear(box);
     var cs = cols(), R = refCol(), rel = R ? st.relM : 'value';
     var head = h('tr', null, h('th', { class: 'stick' }, 'Metric'),
-      rel !== 'value' ? h('th', { class: 'num refcol', title: 'The reference: ' + A.refLabel() }, h('span', { class: 'samp-ref' }, 'ref'), ' ', short(R.name)) : null,
+      rel !== 'value' ? h('th', { class: 'num refcol', title: 'The reference: ' + A.refLabel(), 'data-x': 'Reference: ' + A.refLabel() }, h('span', { class: 'samp-ref' }, 'ref'), ' ', short(R.name)) : null,
       cs.map(function (c) {
         var cb = h('input', { type: 'checkbox', checked: !chartOff[c.id], title: 'Show ' + c.name + ' in the charts',
-          onchange: function () { chartOff[c.id] = !cb.checked; renderChart(); renderHeat(); renderSpeciesChart(); } });
-        return h('th', { class: 'num' + (isRefCol(c) ? ' refcol' : ''), title: c.name + (c.isGroup ? ': ' + c.members.map(function (r) { return r.name; }).join(', ') : '') + (isRefCol(c) ? ' · the reference' : '') },
+          onchange: function () { chartOff[c.id] = !cb.checked; renderChart(); renderHeat(); renderSpeciesChart(); renderPG(); } });
+        return h('th', { class: 'num' + (isRefCol(c) ? ' refcol' : ''), 'data-x': c.name + (rel === 'diff' ? ' (difference)' : rel === 'ratio' ? ' (ratio)' : ''),
+          title: c.name + (c.isGroup ? ': ' + c.members.map(function (r) { return r.name; }).join(', ') : '') + (isRefCol(c) ? ' · the reference' : '') },
           h('label', { class: 'colpick' }, cb, h('i', { style: { background: colorOf[c.id] } }), short(c.name)));
       }));
     var body = h('tbody');
@@ -25988,21 +26485,29 @@ APP.views.compare = (function () {
           renderAll();
         } }, m[0], sorted ? (st.colSort.dir < 0 ? ' ▼' : ' ▲') : '');
       var rv = R ? metVal(m, R) : null, len = m[3] === 'len';
-      body.appendChild(h('tr', { class: sorted ? 'sel' : '' }, h('td', { class: 'stick' }, h('span', { class: 'mcell' }, tick, lab), m[2] ? h('small', null, m[2]) : null),
-        rel !== 'value' ? h('td', { class: 'num refcol' }, fmtMetric(m, rv)) : null,
+      function dv(x) { return x === null || x === undefined || !isFinite(x) ? (x === Infinity ? 'new' : '') : String(x); }
+      body.appendChild(h('tr', { class: sorted ? 'sel' : '' }, h('td', { class: 'stick', 'data-v': m[0] }, h('span', { class: 'mcell' }, tick, lab), m[2] ? h('small', null, m[2]) : null),
+        rel !== 'value' ? h('td', { class: 'num refcol', 'data-v': dv(rv) }, fmtMetric(m, rv)) : null,
         vals.map(function (v, i) {
           var c = cs[i], sd = metSD(m, c);
-          if (rel === 'value') return h('td', { class: 'num' + (isRefCol(c) ? ' refcol' : '') }, fmtMetric(m, v), sd !== null ? h('span', { class: 'sd' }, ' ±' + (len ? UI.fx(sd, 1) : UI.pct(sd, 1))) : null);
-          return h('td', { class: 'num' + (isRefCol(c) ? ' refcol' : ''), style: { background: relTint(v, rv) }, title: c.name + ': ' + fmtMetric(m, v) + (len ? '' : '%') + ' · reference: ' + fmtMetric(m, rv) + (len ? '' : '%') },
-            fmtRel(relOf(v, rv, rel), rel, len));
+          if (rel === 'value') return h('td', { class: 'num' + (isRefCol(c) ? ' refcol' : ''), 'data-v': dv(v), 'data-sd': c.isGroup ? dv(sd) : null },
+            fmtMetric(m, v), sd !== null ? h('span', { class: 'sd' }, ' ±' + (len ? UI.fx(sd, 1) : UI.pct(sd, 1))) : null);
+          var x = relOf(v, rv, rel);
+          return h('td', { class: 'num' + (isRefCol(c) ? ' refcol' : ''), 'data-v': dv(x), style: { background: relTint(v, rv) }, title: c.name + ': ' + fmtMetric(m, v) + (len ? '' : '%') + ' · reference: ' + fmtMetric(m, rv) + (len ? '' : '%') },
+            fmtRel(x, rel, len));
         })));
     });
     var relSeg = R ? segBtns(REL_SEG, st.relM, function (v) { st.relM = v; renderTable(); }, 'Show the samples as') : null;
+    var tableEl = h('table', { class: 'tbl metric-tbl' }, h('thead', null, head), body);
+    var xl = UI.dl.buttons({ table: function () { return tableEl; }, name: 'MuroSense_profile_metrics_' + (basis === 'uv' ? 'UV' : 'MS') + (grouped() ? '_group_means' : '') + (rel === 'diff' ? '_difference' : rel === 'ratio' ? '_ratio' : ''),
+      note: ['Profile metrics from ' + (basis === 'uv' ? 'UV' : 'MS') + (grouped() ? ', group means (SD in the columns that follow)' : '') +
+        (rel === 'diff' ? '; each sample minus the reference, ' + A.refLabel() : rel === 'ratio' ? '; each sample over the reference, ' + A.refLabel() : '') + ' (MuroSense)'] });
     box.appendChild(h('div', { class: 'card' },
       h('div', { class: 'card-h' }, h('div', null, h('h3', null, 'Profile metrics (' + (basis === 'uv' ? 'UV' : 'MS') + ')' + (grouped() ? ', group means' : '')),
           h('div', { class: 'small muted' }, 'Click a metric to order the samples by it · tick metrics to plot them · untick a column to leave it out of the charts')),
-        relSeg ? h('span', { class: 'row small muted', style: { gap: '6px' }, title: 'Against the reference: ' + A.refLabel() }, 'vs reference', relSeg) : null),
-      h('div', { class: 'tbl-wrap freeze', style: { 'max-height': '62vh' } }, h('table', { class: 'tbl metric-tbl' }, h('thead', null, head), body)),
+        h('div', { class: 'row', style: { gap: '8px', 'flex-wrap': 'wrap' } },
+          relSeg ? h('span', { class: 'row small muted', style: { gap: '6px' }, title: 'Against the reference: ' + A.refLabel() }, 'vs reference', relSeg) : null, xl)),
+      h('div', { class: 'tbl-wrap freeze', style: { 'max-height': '62vh' } }, tableEl),
       rel !== 'value' || grouped() ? h('p', { class: 'note', style: { padding: '10px 16px' } },
         (grouped() ? 'Each group’s column is the mean of its samples, ± their standard deviation. ' : '') +
         (rel === 'diff' ? 'Each sample minus the reference (' + A.refLabel() + '), in percentage points (units for lengths). ' : rel === 'ratio' ? 'Each sample over the reference (' + A.refLabel() + '): 1.00× is the same. ' : '') +
@@ -26011,7 +26516,8 @@ APP.views.compare = (function () {
 
   /* ---------------- chart of the profile ---------------- */
   function renderChart() {
-    var box = boxes.chart; if (!box) return; UI.clear(box);
+    if (skip('chart')) return;
+    var box = boxes.chart; UI.clear(box);
     var runs = inChart();
     var ticked = APP.tabs.METRICS.map(function (m, i) { return st.metricSel[i] && m[1] ? i : -1; }).filter(function (i) { return i >= 0; });
     if (st.view === 'metrics' && !ticked.length) st.view = 'oligo';
@@ -26058,9 +26564,13 @@ APP.views.compare = (function () {
     var zoom = h('input', { type: 'range', min: 4, max: 40, step: 1, value: st.barW, 'aria-label': 'Bar width',
       oninput: function () { st.barW = +zoom.value; UI.store.set('cmpBarW', st.barW); draw(); renderSpeciesChart(); } });
     var legend = h('div', { class: 'legend' }, series.map(function (q) { return h('span', null, h('i', { style: { background: q.color.indexOf('--') === 0 ? 'var(' + q.color + ')' : q.color, height: '10px', width: '10px' } }), q.label); }));
+    var viewName = views.filter(function (v) { return v[0] === st.view; })[0];
+    var img = UI.dl.buttons({ fig: function () { return UI.$('.bars', host); },
+      figOpt: function () { return { title: (viewName ? viewName[1] : st.view).replace(/\s*\(\d+\)$/, '') + ', from ' + (basis === 'uv' ? 'UV' : 'MS'), legend: series.length > 1 ? series.map(function (q) { return { label: q.label, color: q.color }; }) : null }; },
+      name: function () { return 'MuroSense_' + (viewName ? viewName[1] : st.view).replace(/\s*\(\d+\)$/, '') + (basis === 'uv' ? '_UV' : '_MS'); } });
     box.appendChild(h('div', { class: 'card' },
-      h('div', { class: 'card-h' }, h('h3', null, 'At a glance'), h('div', { class: 'row', style: { gap: '8px' } }, oseg,
-        h('label', { class: 'row small muted', style: { gap: '6px' } }, 'Bar width', zoom))),
+      h('div', { class: 'card-h' }, h('h3', null, 'At a glance'), h('div', { class: 'row', style: { gap: '8px', 'flex-wrap': 'wrap' } }, oseg,
+        h('label', { class: 'row small muted', style: { gap: '6px' } }, 'Bar width', zoom), img)),
       h('div', { class: 'card-b stack', style: { gap: '10px' } }, vseg, legend, host,
         h('p', { class: 'note' }, 'One group of bars per ' + (grouped() ? 'group (its mean; the whiskers show ± one standard deviation of its samples) or sample' : 'sample') + '; the axis fits what is shown, so a small class such as trimers is drawn at full height. With many samples the chart scrolls sideways and keeps its axis. Hover a bar for its value; click a sample’s bar to open that run in Analyse.'))));
     draw();
@@ -26099,7 +26609,8 @@ APP.views.compare = (function () {
   }
   var spList = [], spRuns = [];
   function renderSpecies() {
-    var box = boxes.species; if (!box) return; UI.clear(box);
+    if (skip('species')) return;
+    var box = boxes.species; UI.clear(box);
     spRuns = cols();
     var R = refCol(), rel = R ? st.relS : 'value', inShown = R && spRuns.some(function (c) { return c.id === R.id; });
     spList = matrix(spRuns, null, R && !inShown ? [R] : null);
@@ -26126,8 +26637,24 @@ APP.views.compare = (function () {
         } }, c.run ? [h('i', { class: 'swatch', style: { background: colorOf[c.run.id] } }), c.label] : c.ref ? [h('span', { class: 'samp-ref' }, 'ref'), ' ', short(R.name)] : c.label);
       return th;
     }));
-    var tb = h('tbody');
+    var tb = h('tbody'), lastList = [];
     function refV(m) { return R ? m.v[R.id] || 0 : null; }
+    /* the table as a sheet: every species the filters keep, in the order shown */
+    function spSheet() {
+      var c = [{ label: 'Species', key: 'short', width: 28 }, { label: 'Structure (PGLang)', key: 'name', width: 44 }, { label: 'Formula', key: 'fstr', width: 18 },
+               { label: 'Mass (Da)', key: 'mass', fmt: '0.0000', width: 12 }, { label: 'Mean (%)', key: 'mean', fmt: '0.000', width: 10 }, { label: 'Peaks (isomers)', key: 'nIso', fmt: '0', width: 9 }];
+      if (rel !== 'value') c.push({ label: 'Reference: ' + A.refLabel() + ' (%)', get: function (m) { return refV(m); }, fmt: '0.000', width: 16 });
+      spRuns.forEach(function (r) {
+        if (rel === 'value') {
+          c.push({ label: r.name + ' (%)', get: function (m) { return m.v[r.id] || 0; }, fmt: '0.000', width: 16 });
+          if (r.isGroup) c.push({ label: r.name + ' SD', get: function (m) { return m.sd[r.id]; }, fmt: '0.000', width: 10 });
+        } else c.push({ label: r.name + (rel === 'diff' ? ' (difference, points)' : ' (ratio)'), fmt: '0.000', width: 16,
+          get: function (m) { var x = relOf(m.v[r.id] || 0, refV(m), rel); return x === Infinity ? 'new' : x; } });
+      });
+      return [{ name: 'Species ' + (basis === 'uv' ? 'UV' : 'MS'), cols: c, rows: lastList,
+        note: ['Species, % of the identified ' + (basis === 'uv' ? 'UV' : 'MS') + ' signal' + (grouped() ? ', group means' : '') + (rel === 'diff' ? '; each sample minus the reference' : rel === 'ratio' ? '; each sample over the reference (new: not in the reference; 0: found only in it)' : '') +
+          (st.q || st.spCls !== 'all' || st.spMin ? '; filtered as on screen' : '') + ' (MuroSense)'] }];
+    }
     function fill() {
       UI.clear(tb);
       var k = st.spSort.key, d = st.spSort.dir;
@@ -26143,6 +26670,7 @@ APP.views.compare = (function () {
         return x === Infinity ? 1e12 : x === null ? -1e12 : x;
       };
       list.sort(function (a, b) { var x = get(a), y = get(b); return typeof x === 'string' ? d * x.localeCompare(y) : d * ((x || 0) - (y || 0)); });
+      lastList = list;
       count.textContent = list.length + ' of ' + spList.length + ' species';
       list.slice(0, 300).forEach(function (m) {
         var c = h('input', { type: 'checkbox', checked: !!st.spSel[m.fstr], 'aria-label': 'Plot ' + m.short,
@@ -26172,7 +26700,9 @@ APP.views.compare = (function () {
     box.appendChild(h('div', { class: 'card' },
       h('div', { class: 'card-h' }, h('div', null, h('h3', null, 'Species, % of identified ' + (basis === 'uv' ? 'UV' : 'MS') + ' signal' + (grouped() ? ', group means' : '')),
           h('div', { class: 'small muted' }, 'Click a heading to sort · tick species to plot them' + (sk.nameBy === 'ticked' ? ' and to name them on the stacked chromatograms' : sk.nameBy === 'table' ? ' · the stacked chromatograms name what this table shows' : ''))),
-        relSeg ? h('span', { class: 'row small muted', style: { gap: '6px' }, title: 'Against the reference: ' + A.refLabel() }, 'vs reference', relSeg) : null),
+        h('div', { class: 'row', style: { gap: '8px', 'flex-wrap': 'wrap' } },
+          relSeg ? h('span', { class: 'row small muted', style: { gap: '6px' }, title: 'Against the reference: ' + A.refLabel() }, 'vs reference', relSeg) : null,
+          UI.dl.buttons({ table: spSheet, name: function () { return 'MuroSense_species_' + (basis === 'uv' ? 'UV' : 'MS') + (grouped() ? '_group_means' : '') + (rel === 'diff' ? '_difference' : rel === 'ratio' ? '_ratio' : ''); } }))),
       h('div', { class: 'filters' }, search, cseg, h('label', { class: 'row small muted', style: { gap: '6px' } }, 'Mean at least', minIn, '%'),
         h('span', { class: 'spacer' }), count,
         h('button', { class: 'btn sm', onclick: function () { st.spSel = {}; fill(); renderSpeciesChart(); stackFollow('ticked'); } }, 'Clear ticks')),
@@ -26183,6 +26713,7 @@ APP.views.compare = (function () {
     renderSpeciesChart();
   }
   function renderSpeciesChart() {
+    if (!shown('species')) { if (boxes.species) dirty.species = true; return; }
     var box = boxes.spChart; if (!box) return; UI.clear(box);
     var picked = spList.filter(function (m) { return st.spSel[m.fstr]; });
     if (!picked.length) { box.appendChild(h('p', { class: 'note', style: { padding: '12px 16px' } }, 'Tick species in the table to compare them across the samples as bars.')); return; }
@@ -26192,10 +26723,13 @@ APP.views.compare = (function () {
       return h('button', { 'aria-pressed': st.spStack === v[0] ? 'true' : 'false', onclick: function () { st.spStack = v[0]; renderSpeciesChart(); } }, v[1]);
     }));
     var host = h('div', { class: 'chart-scroll' });
+    var img = UI.dl.buttons({ fig: function () { return UI.$('.bars', host); },
+      figOpt: function () { return { title: 'Ticked species, % of identified ' + (basis === 'uv' ? 'UV' : 'MS') + ' signal', legend: series.map(function (q) { return { label: q.label, color: q.color }; }) }; },
+      name: 'MuroSense_ticked_species_' + (basis === 'uv' ? 'UV' : 'MS') });
     host.appendChild(UI.plot.sampleBars({ samples: runs.map(function (r) { return r.name; }), series: series, stacked: st.spStack, barW: st.barW, height: 300, unit: '%',
       vfmt: function (v) { return v.toFixed(2) + '%'; }, label: 'Species chart', onPick: function (k) { if (runs[k].isGroup) return; A.current = runs[k].id; A.show('analyse'); A.emit('runs'); } }));
     box.appendChild(h('div', { class: 'card-b stack', style: { gap: '10px', 'border-top': '1px solid var(--line-2)' } },
-      h('div', { class: 'row', style: { 'justify-content': 'space-between' } }, h('h4', null, 'Ticked species across the samples'), sseg),
+      h('div', { class: 'row', style: { 'justify-content': 'space-between', 'flex-wrap': 'wrap', gap: '8px' } }, h('h4', null, 'Ticked species across the samples'), h('div', { class: 'row', style: { gap: '8px' } }, sseg, img)),
       h('div', { class: 'legend' }, series.map(function (q) { return h('span', null, h('i', { style: { background: q.color.indexOf('--') === 0 ? 'var(' + q.color + ')' : q.color, height: '10px', width: '10px' } }), q.label); })),
       host));
   }
@@ -26479,12 +27013,12 @@ APP.views.compare = (function () {
     function sync() { count.textContent = all.filter(function (it) { return sel[it.key]; }).length + ' of ' + all.length + ' chosen'; renderHeat(); }
     function fill() {
       UI.clear(list);
-      var t = q.trim().toLowerCase(), lastSect = null, shown = 0;
+      var t = q.trim().toLowerCase(), lastSect = null, nShown = 0;
       all.forEach(function (it) {
         if (!isM) {
           if (cls !== 'all' && (cls === '4' ? it.k < 4 : String(it.k) !== cls)) return;
           if (t && (it.label + ' ' + it.full + ' ' + it.mass.toFixed(3)).toLowerCase().indexOf(t) < 0) return;
-          if (++shown > 400) return;
+          if (++nShown > 400) return;
         }
         if (isM && it.sect !== lastSect) { lastSect = it.sect; list.appendChild(h('div', { class: 'eyebrow hm-sect' }, it.sect)); }
         var c = h('input', { type: 'checkbox', checked: !!sel[it.key], onchange: function () { if (c.checked) sel[it.key] = true; else delete sel[it.key]; sync(); } });
@@ -26514,8 +27048,23 @@ APP.views.compare = (function () {
     return UI.plot.svgToPng(F.svg, F.w, F.h, 4).then(function (b) { return b ? UI.plot.pngDpi(b, F.w * 4) : null; })
       .then(function (b) { if (b) return UI.saveFile(name + '.png', b, 'image/png'); UI.toast('Could not make the picture.'); return false; });
   }
+  /* the heat map as sheets: the values, and the scores its colours show, in
+     the order drawn (clustered or not) */
+  function heatSheets(runs, Mo) {
+    var cols = Mo.ci.map(function (c) { return runs[c]; }), rows = Mo.ri.map(function (r) { return Mo.rows[r]; });
+    var scoreName = { z: 'z-score of the row', minmax: 'row scaled 0 (lowest) to 1 (highest)', value: 'value', log: 'value (log colour scale)', lr: 'log2 ratio to the reference', dr: 'difference from the reference, scaled to the largest' }[Mo.mode] || Mo.mode;
+    function sheet(name, pick, note) {
+      return { name: name, note: [note], rows: rows,
+        cols: [{ label: Mo.isM ? 'Metric' : 'Species', get: function (it) { return it.label; }, width: 30 }].concat(Mo.isM ? [] : [{ label: 'Structure (PGLang)', get: function (it) { return it.full || ''; }, width: 44 }])
+          .concat(cols.map(function (r, k) { var ci = Mo.ci[k]; return { label: r.name + (isRefCol(r) ? ' (reference)' : ''), fmt: '0.000', width: 14, get: function (it) { return pick(it, ci); } }; })) };
+    }
+    return [sheet('Values', function (it, ci) { var v = it.vals[ci]; return v === null || v === undefined ? null : v; },
+              (Mo.isM ? 'Profile metrics (' : 'Species, % of identified signal (') + (basis === 'uv' ? 'UV' : 'MS') + '), as in the heat map (MuroSense)'),
+            sheet('Colours', function (it, ci) { var z = it.score[ci]; return z === null || z === undefined ? null : z; }, 'The score each cell is coloured by: ' + scoreName)];
+  }
   function renderHeat() {
-    var box = boxes.heat; if (!box) return; UI.clear(box);
+    if (skip('heat')) return;
+    var box = boxes.heat; UI.clear(box);
     var runs = inChart();
     var card = h('div', { class: 'card' });
     box.appendChild(card);
@@ -26537,7 +27086,8 @@ APP.views.compare = (function () {
     head.appendChild(h('div', { class: 'row', style: { gap: '6px', 'flex-wrap': 'wrap' } },
       h('button', { class: 'btn sm', onclick: function () { heatChooser(runs); }, title: 'Choose the ' + (isM ? 'metrics' : 'species') + ' to show' }, UI.icon('list'), 'Choose ' + (isM ? 'metrics' : 'species') + '…'),
       h('button', { class: 'btn sm', onclick: function () { saveHeat(runs, 'svg'); } }, UI.icon('download'), 'SVG'),
-      h('button', { class: 'btn sm', onclick: function () { saveHeat(runs, 'png'); } }, UI.icon('download'), 'PNG')));
+      h('button', { class: 'btn sm', onclick: function () { saveHeat(runs, 'png'); } }, UI.icon('download'), 'PNG'),
+      h('button', { class: 'btn sm', title: 'The values behind the heat map, and the colour scores, as an Excel workbook', onclick: function () { UI.dl.saveTable(heatSheets(runs, Mo), 'MuroSense_heatmap_' + (isM ? 'metrics' : 'species')); } }, UI.icon('download'), 'Excel')));
     card.appendChild(h('div', { class: 'filters' }, whatSeg, h('span', { class: 'row small muted', style: { gap: '6px' } }, 'Colour', scaleSeg),
       h('label', { class: 'check small' }, cr, ' cluster rows'), h('label', { class: 'check small' }, cc, ' cluster samples'), h('label', { class: 'check small' }, vv, ' values in cells'),
       h('span', { class: 'small muted' }, Mo.rows.length + ' of ' + Mo.all.length + ' ' + (isM ? 'metrics' : 'species'))));
@@ -26567,8 +27117,9 @@ APP.views.compare = (function () {
      names), the profile metrics and the species matrices */
   function compareSheets(runs) {
     var sheets = [], R = refCol(), refTxt = R ? A.refLabel() : '';
-    var shifts = runs.length > 1 ? rtShifts(runs, refIdx(runs)) : null;
-    var Q = runs.map(function (r, i) { return T.qualityChecks(r, { runs: runs, shift: shifts ? shifts[i] : null }); });
+    /* judged as in the checklist on screen: among all the samples */
+    var all = done(), shAll = all.length > 1 ? rtShifts(all, refIdx(all)) : null;
+    var Q = runs.map(function (r) { var i = all.indexOf(r); return T.qualityChecks(r, { runs: all, shift: shAll && i >= 0 ? shAll[i] : null }); });
     var base = pgBaseOf(runs), low = T.pgLow();
     sheets.push({ name: 'Samples', note: ['Samples compared by MuroSense, in the order of the columns. Renamed samples keep their original (file) name here.' +
         (R ? ' Reference: ' + refTxt + '.' : '') + ' Total PG is the summed UV peak area of the identified muropeptides (absorbance × min, in the file’s units).'],
@@ -26587,14 +27138,7 @@ APP.views.compare = (function () {
                  pg: pg ? pg.id : null, pgPct: pct, pgLow: pct !== null && pct < low ? 'low' : '', qc: T.QC_WORD[Q[i].overall.s], qcScore: Q[i].overall.score, src: r.source };
       }) });
     /* the checklist */
-    var qcCols = [{ label: 'Sample', key: 'name', width: 34 }, { label: 'Overall', key: 'overall', width: 9 }, { label: 'Score', key: 'score', width: 7 }, { label: 'To look at', key: 'flags', width: 30 }];
-    T.QC.forEach(function (c) { qcCols.push({ label: c.label, key: 'v_' + c.key, width: 20 }, { label: c.label + ': grade', key: 's_' + c.key, width: 9 }); });
-    sheets.push({ name: 'Quality', note: ['Quality checklist of each sample. ' + T.QC.map(function (c) { return c.label + ': ' + c.tip; }).join(' ')], cols: qcCols,
-      rows: runs.map(function (r, i) {
-        var q = Q[i], row = { name: r.name, overall: T.QC_WORD[q.overall.s], score: q.overall.score, flags: q.overall.flags.join(', ') };
-        T.QC.forEach(function (c) { var x = q[c.key]; row['v_' + c.key] = x ? x.text : ''; row['s_' + c.key] = x ? T.QC_WORD[x.s] : ''; });
-        return row;
-      }) });
+    sheets.push(qcSheet(runs.map(function (r, i) { return { r: r, q: Q[i] }; })));
     /* total PG */
     if (runs.some(function (r) { return T.totalPG(r); })) {
       sheets.push({ name: 'Total PG', note: ['Total peptidoglycan from the UV trace: the summed UV peak area of the identified muropeptides (absorbance × min, in the units the file records absorbance in), and the area of every UV peak in the muropeptide window. ' +
@@ -26727,9 +27271,10 @@ APP.views.compare = (function () {
     return cl;
   }
   function renderUnex() {
-    var box = boxes.unex; if (!box) return; UI.clear(box);
+    if (skip('unex')) return;
+    var box = boxes.unex; UI.clear(box);
     var runs = chosen();
-    if (runs.length < 2) return;
+    if (runs.length < 2) { box.appendChild(h('div', { class: 'card' }, h('div', { class: 'card-h' }, h('h3', null, 'Unexplained features across samples')), h('div', { class: 'empty' }, 'Tick two or more samples to compare their unexplained features.'))); return; }
     var cl = unexClusters(runs);
     var tb = h('tbody'), more = h('div', { style: { padding: '10px 16px' } }), count = h('span', { class: 'small muted' });
     function list() {
@@ -26768,18 +27313,23 @@ APP.views.compare = (function () {
     var rtSel = h('select', { class: 'input', 'aria-label': 'Retention window', onchange: function () { ux.rtTol = +rtSel.value; renderUnex(); } },
       [0.15, 0.3, 0.5, 1].map(function (v) { return h('option', { value: v, selected: ux.rtTol === v }, '± ' + v + ' min'); }));
     var muroBox = h('input', { type: 'checkbox', checked: ux.muro, onchange: function () { ux.muro = muroBox.checked; renderUnex(); } });
-    function csv() {
-      var cols = [{ label: 'Mass', get: function (c) { return +c.mass.toFixed(4); } }, { label: 'RT (min)', get: function (c) { return +c.rt.toFixed(2); } }]
-        .concat(runs.map(function (r) { return { label: r.name + (A.renamed(r) ? ' [' + r.origName + ']' : '') + ' (% of signal)', get: function (c) { return c.by[r.id] ? +c.by[r.id].pct.toFixed(4) : 0; } }; }))
-        .concat([{ label: 'Samples with it', key: 'present' }, { label: 'Lead', key: 'lead' }]);
-      UI.saveFile('murosense_unexplained_across_samples.csv', UI.files.csv(cols, list()), 'text/csv');
+    function ucols() {
+      return [{ label: 'Mass (Da)', get: function (c) { return +c.mass.toFixed(4); }, fmt: '0.0000', width: 12 }, { label: 'RT (min)', get: function (c) { return +c.rt.toFixed(2); }, fmt: '0.00', width: 8 }]
+        .concat(runs.map(function (r) { return { label: r.name + (A.renamed(r) ? ' [' + r.origName + ']' : '') + ' (% of signal)', get: function (c) { return c.by[r.id] ? +c.by[r.id].pct.toFixed(4) : 0; }, fmt: '0.000', width: 14 }; }))
+        .concat([{ label: 'Samples with it', key: 'present', fmt: '0', width: 9 }, { label: 'Lead', key: 'lead', width: 50 }]);
+    }
+    function csv() { UI.saveFile('murosense_unexplained_across_samples.csv', UI.files.csv(ucols(), list()), 'text/csv'); }
+    function xlsx() {
+      UI.dl.saveTable([{ name: 'Unexplained', cols: ucols(), rows: list(), note: ['Unexplained features across the samples, matched by mass (± 5 ppm) and retention (± ' + ux.rtTol + ' min); % of each sample’s signal; as filtered on screen (MuroSense)'] }],
+        'MuroSense_unexplained_across_samples');
     }
     fill();
     box.appendChild(h('div', { class: 'card' },
       h('div', { class: 'card-h' }, h('div', null, h('h3', null, 'Unexplained features across samples'),
         h('div', { class: 'small muted' }, 'matched by mass (± 5 ppm) and retention; % of each sample’s signal')),
         h('div', { class: 'row', style: { gap: '6px' } }, showSel, sortSel, rtSel, h('label', { class: 'check small' }, muroBox, 'muropeptide-like only'), count,
-          h('button', { class: 'btn sm', onclick: csv }, UI.icon('download'), 'CSV'))),
+          h('button', { class: 'btn sm', onclick: csv }, UI.icon('download'), 'CSV'),
+          h('button', { class: 'btn sm', onclick: xlsx }, UI.icon('download'), 'Excel'))),
       h('p', { class: 'note', style: { padding: '10px 16px 0' } }, 'Features no sample explained. One present in a mutant and absent from the wild type (or the reverse) is often the species the mutation makes or loses; the lead column carries what Unexplained found for it (open search or a known difference). Click one to see its evidence.'),
       h('div', { class: 'tbl-wrap', style: { 'max-height': '70vh' } }, h('table', { class: 'tbl click' },
         h('thead', null, h('tr', null, h('th', { class: 'num' }, 'Mass'), h('th', { class: 'num' }, 'RT'), runs.map(function (r) { return h('th', { class: 'num', title: r.name }, short(r.name)); }),
@@ -26860,7 +27410,11 @@ APP.views.structure = (function () {
       exRow('Sacculus muropeptides', EXAMPLES), exRow('Precursors', PRECURSORS, false), exRow('Soluble and recycling', SOLUBLE, false))));
     out = h('div', { class: 'stack', style: { 'margin-top': '16px' } });
     root.appendChild(out);
-    root.appendChild(resolverCard());
+    var resolver = resolverCard();
+    root.appendChild(resolver);
+    /* the drawing, the isotope pattern and the tables save as pictures and sheets */
+    UI.dl.watch(out, function () { return 'MuroSense_' + (st.text.trim() || 'structure'); });
+    UI.dl.watch(resolver, function () { return 'MuroSense_mass_' + (st.text.trim() || 'structures'); });
     calc();
   }
   function load(text, reduced) {
@@ -27162,6 +27716,8 @@ APP.views.library = (function () {
     side = h('div', { class: 'stack lib-side', style: { gap: '10px' } });
     detail = h('div', { class: 'stack', style: { 'min-width': 0 } });
     root.appendChild(h('div', { class: 'lib' }, side, detail));
+    /* tables made here (rule comparisons, a library's test) save as sheets */
+    UI.dl.watch(detail, function () { return 'MuroSense_' + (cur === 'ref' ? 'reference_list' : nameOf(cur)); });
     if (A.libFromValue(A.settings.profile)) cur = A.settings.profile;
     A.on('libraries', function () { if (cur !== 'ref' && !profileOf(cur)) { cur = 'gramneg'; if (mode === 'view') renderDetail(); } renderSide(); });
     A.on('settings', renderSide);
@@ -27337,6 +27893,7 @@ APP.views.library = (function () {
       h('p', { class: 'note' }, 'Every chemistry also searches the plain GlcNAc-MurNAc disaccharide with its stems. Residues are named with their usual configuration (L-Ala, D-iGlu, D-iGln, m-DAP, D-Ala); -NH₂ marks an amidated form. The full rules and every structure generated are on each chemistry’s page; Compare… on that page sets two side by side, rule by rule.')
     ];
     Md = UI.modal({ title: 'Chemistry chart', sub: 'The built-in chemistries side by side: what they share and what sets each apart. Point at a value to see it in every row; click a name to open it.', wide: true, body: body });
+    UI.dl.attach(Md.body, 'MuroSense');
   }
 
   /* ---------------- one chemistry ---------------- */
@@ -27472,11 +28029,12 @@ APP.views.library = (function () {
         h('div', { class: 'row' }, search, seg, count,
           h('button', { class: 'btn sm', onclick: function () { exportPG(p, sp); }, title: 'Structure and monoisotopic mass, in the PGFinder database format' }, UI.icon('download'), 'PGFinder masses'),
           h('button', { class: 'btn sm', onclick: function () { exportFull(p, sp); } }, UI.icon('download'), 'Full list (CSV)'),
+          h('button', { class: 'btn sm', onclick: function () { UI.dl.saveTable([fullSheet(p, sp)], (p.short || 'chemistry') + '_structures'); }, title: 'Every structure, as an Excel sheet' }, UI.icon('download'), 'Full list (Excel)'),
           h('button', { class: 'btn sm', title: 'Predicted MS/MS spectra of every structure, as an MS-DIAL / NIST .msp spectral library', onclick: function () {
             exportMsp(sp.entries.map(function (e) { return { name: e.short + ' ' + e.text, text: e.text }; }), (p.short || 'chemistry'));
           } }, UI.icon('download'), 'Spectral library (.msp)'))),
       h('p', { class: 'note', style: { padding: '10px 16px 0' } }, 'Click a structure to open it in Structure.'),
-      h('div', { class: 'tbl-wrap', style: { 'max-height': '60vh' } }, h('table', { class: 'tbl click' },
+      h('div', { class: 'tbl-wrap', 'data-dl-skip': '', style: { 'max-height': '60vh' } }, h('table', { class: 'tbl click' },
         h('thead', null, ehead), tb)), more);
   }
   function exportPG(p, sp) {
@@ -27486,16 +28044,21 @@ APP.views.library = (function () {
     UI.saveFile((p.short || 'chemistry').replace(/[^\w.-]+/g, '_') + '_PGFinder_' + (reducedView ? 'reduced' : 'nonreduced') + '.csv',
       UI.files.csv([{ label: 'Structure', key: 's' }, { label: 'Monoisotopicmass', key: 'm' }], rows), 'text/csv');
   }
-  function exportFull(p, sp) {
+  /* every structure of a chemistry, as a sheet (CSV or Excel) */
+  function fullSheet(p, sp) {
     var rows = sp.entries.map(function (e) {
       return { text: e.text, short: e.short, kind: e.kind, k: e.k, stems: e.nStem, anh: e.nAnh, links: (e.links || []).join(','), formula: e.fstr,
                m0: +e.mass0.toFixed(5), mr: +(e.mass0 + (e.nRed || 0) * 2.0156500638).toFixed(5), nRed: e.nRed, iso: (e.isomers || []).length };
     });
-    UI.saveFile((p.short || 'chemistry').replace(/[^\w.-]+/g, '_') + '_structures.csv', UI.files.csv([
-      { label: 'Structure (PGLang)', key: 'text' }, { label: 'Short name', key: 'short' }, { label: 'Kind', key: 'kind' }, { label: 'Units', key: 'k' },
-      { label: 'Stems', key: 'stems' }, { label: 'Anhydro', key: 'anh' }, { label: 'Cross-links', key: 'links' }, { label: 'Formula (unreduced)', key: 'formula' },
-      { label: 'Monoisotopic mass, unreduced', key: 'm0' }, { label: 'Monoisotopic mass, reduced', key: 'mr' }, { label: 'Reducing ends', key: 'nRed' },
-      { label: 'Arrangements', key: 'iso' }], rows), 'text/csv');
+    return { name: 'Structures', rows: rows, note: [(p.short || 'chemistry') + ': every structure its rules generate (MuroSense)'], cols: [
+      { label: 'Structure (PGLang)', key: 'text', width: 34 }, { label: 'Short name', key: 'short', width: 22 }, { label: 'Kind', key: 'kind', width: 10 }, { label: 'Units', key: 'k', fmt: '0', width: 6 },
+      { label: 'Stems', key: 'stems', fmt: '0', width: 6 }, { label: 'Anhydro', key: 'anh', fmt: '0', width: 8 }, { label: 'Cross-links', key: 'links', width: 12 }, { label: 'Formula (unreduced)', key: 'formula', width: 18 },
+      { label: 'Monoisotopic mass, unreduced', key: 'm0', fmt: '0.0000', width: 14 }, { label: 'Monoisotopic mass, reduced', key: 'mr', fmt: '0.0000', width: 14 }, { label: 'Reducing ends', key: 'nRed', fmt: '0', width: 8 },
+      { label: 'Arrangements', key: 'iso', fmt: '0', width: 8 }] };
+  }
+  function exportFull(p, sp) {
+    var S = fullSheet(p, sp);
+    UI.saveFile((p.short || 'chemistry').replace(/[^\w.-]+/g, '_') + '_structures.csv', UI.files.csv(S.cols, S.rows), 'text/csv');
   }
 
   /* ---------------- versions and comparisons ----------------
@@ -27721,13 +28284,15 @@ APP.views.library = (function () {
       A.saveLibrary(lib);
       UI.toast(UI.plural(add.length, 'structure') + ' added to “' + lib.name + '”.');
     }
-    function csvShown() {
+    var REF_COLS = [
+      { label: 'ID', key: 'id', width: 10 }, { label: 'Name', key: 'name', width: 24 }, { label: 'PGLang', key: 'pglang', width: 34 }, { label: 'Aliases', key: 'aliases', width: 30 },
+      { label: 'Monoisotopic mass (reduced where possible)', get: function (r) { return +r.mass.toFixed(5); }, fmt: '0.0000', width: 14 }, { label: 'Formula', key: 'formula', width: 18 },
+      { label: 'Class', key: 'klass', width: 12 }, { label: 'Gram', key: 'gram', width: 8 }, { label: 'Sets', key: 'sets', width: 20 }, { label: 'Organisms', key: 'organisms', width: 30 },
+      { label: 'Status', key: 'status', width: 10 }, { label: 'Notes', key: 'notes', width: 40 }];
+    function csvShown() { UI.saveFile('MuroSense_reference_list.csv', UI.files.csv(REF_COLS, shownRows()), 'text/csv'); }
+    function xlsxShown() {
       var f = shownRows();
-      UI.saveFile('MuroSense_reference_list.csv', UI.files.csv([
-        { label: 'ID', key: 'id' }, { label: 'Name', key: 'name' }, { label: 'PGLang', key: 'pglang' }, { label: 'Aliases', key: 'aliases' },
-        { label: 'Monoisotopic mass (reduced where possible)', get: function (r) { return r.mass.toFixed(5); } }, { label: 'Formula', key: 'formula' },
-        { label: 'Class', key: 'klass' }, { label: 'Gram', key: 'gram' }, { label: 'Sets', key: 'sets' }, { label: 'Organisms', key: 'organisms' },
-        { label: 'Status', key: 'status' }, { label: 'Notes', key: 'notes' }], f), 'text/csv');
+      UI.dl.saveTable([{ name: 'Reference list', cols: REF_COLS, rows: f, note: ['Curated reference list, ' + SAC.curated.VERSION + ': ' + UI.plural(f.length, 'structure') + ' as filtered on screen (MuroSense)'] }], 'MuroSense_reference_list');
     }
     function pgShown() {
       var f = shownRows().map(function (r) {
@@ -27750,11 +28315,12 @@ APP.views.library = (function () {
             h('span', { class: 'spacer' }),
             h('button', { class: 'btn sm', onclick: pgShown }, UI.icon('download'), 'PGFinder masses'),
             h('button', { class: 'btn sm', onclick: csvShown }, UI.icon('download'), 'Full list (CSV)'),
+            h('button', { class: 'btn sm', onclick: xlsxShown, title: 'The structures shown, every column, as an Excel sheet' }, UI.icon('download'), 'Full list (Excel)'),
             h('button', { class: 'btn sm', onclick: function () { exportMsp(shownRows().map(function (r) { return { name: (r.aliases || r.name) + ' ' + r.pglang, text: r.pglang, note: r.id }; }), 'reference_list'); } },
               UI.icon('download'), 'Spectral library (.msp)')))),
       h('div', { class: 'card' }, h('div', { class: 'card-h' }, h('h3', null, 'Structures'), h('div', { class: 'row' }, search, setSel, klSel, count)),
         h('p', { class: 'note', style: { padding: '10px 16px 0' } }, 'Click a structure to open it in Structure.'),
-        h('div', { class: 'tbl-wrap', style: { 'max-height': '64vh' } }, h('table', { class: 'tbl click' },
+        h('div', { class: 'tbl-wrap', 'data-dl-skip': '', style: { 'max-height': '64vh' } }, h('table', { class: 'tbl click' },
           h('thead', null, h('tr', null, h('th', null, 'Structure'), h('th', { class: 'num' }, 'Mass'), h('th', null, 'Class'), h('th', null, 'Set · organisms'), h('th', null, 'Status'))), tb)), more));
   }
   function newChoice() {
@@ -28822,9 +29388,10 @@ APP.views.guide = (function () {
 
     body.appendChild(sec('compare', 'Comparing samples', [
       p('Compare takes the runs ticked under Samples. Every section and export follows one order, yours: drag a sample’s chip to move it, or open ', h('i', null, 'Samples…'), '. Clicking a metric in the metric table orders the samples by it for a while; ', h('i', null, 'Back to your order'), ' returns to yours.'),
+      p('The results sit under tabs that stay at the top while the page scrolls: ', h('i', null, 'Quality'), ', ', h('i', null, 'Chromatograms'), ', ', h('i', null, 'Total PG'), ', ', h('i', null, 'Profile metrics'), ' (the table and At a glance), ', h('i', null, 'Heat map'), ', ', h('i', null, 'Species'), ' and ', h('i', null, 'Unexplained'), ', or ', h('i', null, 'All'), ' for every section one under another. A section is drawn when its tab opens, so many samples stay quick; the tab last used is remembered.'),
       li([
         [h('b', null, 'Samples, groups and the reference. '), h('i', null, 'Samples…'), ' lists every sample with its original (file) name, the name to use, and its group. Rows move by their handle or the arrows, or all at once by name (2 before 10), by group, in reverse or as added. ', h('i', null, 'Shorten names'), ' drops what all the file names share (a date, a project prefix). Samples in one group are replicates of a strain or condition. The ', h('i', null, 'Reference'), ' (here or above the chips) is one sample, or the mean of one group, that the others are compared with. With groups, ', h('i', null, 'Columns: Group means'), ' shows one column per group, the mean of its samples ± their standard deviation, in the tables, the charts, the heat map and Total PG; samples outside a group stay on their own. Names, groups, order and reference are saved with the session.'],
-        [h('b', null, 'Quality checklist. '), 'One row per sample, to look at before drawing conclusions from it: mass accuracy after calibration, the share of the muropeptide-like signal explained, contaminants, species found and peak width (against the median sample), the UV signal-to-noise and how much of the UV the identified species explain, total PG (against the reference or the median), detector saturation, reduction, and the retention-time shift against the reference. A green dot is good, amber worth a look, red poor; hover a heading for its thresholds. The worst check gives the overall grade, and the score weighs good as 1 and check as ½. A sample’s name opens its Quality tab in Analyse, where the same checklist heads the evidence.'],
+        [h('b', null, 'Quality checklist. '), 'One row per sample, to look at before drawing conclusions from it: mass accuracy after calibration, the share of the muropeptide-like signal explained, contaminants, species found and peak width (against the median sample), the UV signal-to-noise and how much of the UV the identified species explain, total PG (against the reference or the median), detector saturation, reduction, and the retention-time shift against the reference. A green dot is good, amber worth a look, red poor; hover a heading for its thresholds. The worst check gives the overall grade, and the score weighs good as 1 and check as ½. A sample’s name opens its Quality tab in Analyse, where the same checklist heads the evidence. Click a heading to sort on that check: worst first, again for best first, a third time for your order (sorting orders this table only). The tick box before each name leaves the sample out of every other section and the exports, as unticking its chip does; the sample stays in the checklist, dimmed, to tick again. The box in the heading ticks or unticks every sample listed (with ', h('i', null, 'To check'), ', every sample to check), so poor samples can be left out together.'],
         [h('b', null, 'Stacked chromatograms. '), 'Each sample’s trace (UV, base peak or TIC) sits on its own y axis, relative to its tallest peak or, with one scale, to the tallest of all. Species found in every sample are named in black; with Show differences, species missing from some are named in red. ', h('i', null, 'Mark peaks'), ' draws a shaded band or a thin line down the stack where each named species elutes; ', h('i', null, 'Names'), ' puts the structures above the stack, over each sample’s own peaks, or nowhere. Many samples scroll in a window between the names and the time axis, which stay in place; ', h('i', null, 'Trace height'), ' sets how tall each trace is, and ', h('i', null, 'all at full length'), ' shows them all at once. Click a sample’s name to hide it from the figure (it stays in the tables); hidden samples are listed above the figure, each a click from coming back, with ', h('i', null, 'Unhide all'), '.'],
         [h('b', null, 'Retention times. '), 'Each sample elutes a little earlier or later. Peaks are matched across the samples by composition and retention time: rows of one composition within ± the matching window (0.3 min unless changed) are one species, so isomers that elute apart are named apart. Each sample keeps its own peak times: a band or line bends through each sample’s own peak (or where it would be, in a sample without it), names over the peaks sit on each sample’s own peaks, and names above the stack sit at the mean time. Matching first allows for each sample’s overall shift against the reference, the median shift of the big peaks (0.5% or more) they share; ', h('i', null, 'align times'), ' also moves each trace by it, so the same peaks line up, and writes the shift under each name. A sample sharing fewer than three big peaks with the reference (another organism, another gradient) is not moved.'],
         [h('b', null, 'Which species are named. '), 'The traces are the detector signal and always show every peak; ', h('i', null, 'Name species by'), ' sets which species get a name and a mark. ', h('i', null, 'Share cutoff'), ' names those reaching a share in at least one sample; ', h('i', null, 'Table filter'), ' names what the Species table further down shows with its search, class and mean filters; ', h('i', null, 'Ticked in table'), ' names only the species ticked there, the usual choice for a figure (an isomer under a quarter of its composition’s biggest peak is left unnamed). The figure follows the table as you change it. Click a name on the figure to hide it; ', h('i', null, 'Show hidden names'), ' brings them back.'],
@@ -28833,10 +29400,11 @@ APP.views.guide = (function () {
         [h('b', null, 'Against the reference. '), 'With a reference chosen, the metric and species tables show each sample as its value, its difference from the reference (percentage points), or its ratio to it (1.00× is the same; for species, new where the reference lacks it, lost where only the reference has it). Cells are tinted red for more and blue for less, full at 4-fold, and the reference’s own values lead the table.'],
         [h('b', null, 'Heat maps. '), 'The profile metrics (with total PG) or the species, one column per sample and one row per metric or species. ', h('i', null, 'Choose…'), ' picks the rows, and × beside a row removes it. Colours: a z-score per row (blue below the mean, red above), each row from its lowest to its highest value, for species the % of signal on a linear or log scale (one blue ramp, darker for more; grey: not found), and, with a reference, the ratio to the reference (log₂, red more, blue less, full at 4-fold; the reference column is marked ◆) or, for species, the difference in percentage points. A ring marks a species new against the reference or lost. Rows and samples can be clustered (average linkage, with dendrograms), and values written in the cells. SVG or PNG save it in the light theme.'],
         [h('b', null, 'Charts. '), 'At a glance and the species chart keep one group of bars per sample at a readable width; with many samples they scroll sideways and keep their value axis in view. Bar width widens them. With group means, whiskers show ± one standard deviation.'],
-        [h('b', null, 'Tables and Excel. '), 'The metric and species tables are the exact values behind the charts and heat maps. Excel saves the Samples sheet (original names, groups, the reference, total PG, quality), the quality checklist, total PG, the profile metrics, the group means with their SD, the metrics and species against the reference (difference and ratio), and the species matrices.']])]));
+        [h('b', null, 'Tables and Excel. '), 'The metric and species tables are the exact values behind the charts and heat maps. Excel beside Samples saves the whole comparison in one workbook: the Samples sheet (original names, groups, the reference, total PG, quality), the quality checklist, total PG, the profile metrics, the group means with their SD, the metrics and species against the reference (difference and ratio), and the species matrices. Each section also saves on its own: Excel above a table saves that table as shown, and SVG or PNG above a chart that chart (see Saving).']])]));
 
     body.appendChild(sec('saving', 'Saving and the bundle', [
       p('Each run saves as an Excel workbook or a CSV of its species (Analyse), or as an analysis file that opens again with every result and evidence (Save analysis); ', h('i', null, 'Save session'), ' keeps all runs in one file, with their names, groups, order and the reference.'),
+      p(h('b', null, 'One table or figure. '), 'Every table and figure, in Analyse’s tabs, the evidence panel, Compare, Structure and Library, has small buttons above it: ', h('i', null, 'Excel'), ' saves that table as shown (as filtered and sorted; numbers stay numbers, with the decimals shown on screen, a unit shared by a column in its heading, a group’s spread in a column of its own), ', h('i', null, 'SVG'), ' saves that figure as a vector figure and ', h('i', null, 'PNG'), ' as a picture at three times its size, marked at least 300 dpi (a wide one prints about 18 cm wide). Figures are always saved in the light theme’s colours, with their legend, whatever the theme on screen. The file is named after the sample and the section, such as Vc_WT_1_quality_UV_trace.png. The species table of a run saves every column of the species shown, and the long structure lists of the Library their full list.'),
       p(h('b', null, 'The bundle. '), h('i', null, 'Save bundle'), ' packs everything in one compressed .zip, to archive with a project or send with a manuscript: a README; ', h('b', null, 'methods.txt'), ', a methods text for publication (a general paragraph, one per sample, and the references); ', h('b', null, 'parameters.json'), ' with every setting and the chemistry rules each run used; ', h('b', null, 'samples.csv'), ' with the names used, the original names, the groups, the reference and total PG; per sample the full workbook, the species, the MS/MS fragments matched to each species (', h('b', null, 'fragment_evidence.csv'), ': label, m/z, error, co-elution), the profile metrics, the unexplained features, its methods paragraph and its chromatogram with the species named at its own peaks; the comparison workbook, stacked chromatograms and heat maps; the chemistries searched with every monomer and dimer they generate, your libraries and every structure identified; and the session itself, so the .zip opens again in MuroSense.')]));
 
     body.appendChild(sec('pglang', 'Writing structures (PGLang)', [
