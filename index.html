@@ -20684,6 +20684,32 @@ var UI = (function () {
       setTimeout(function () { pr.focus(); }, 0);
     });
   }
+  /* a short question with a line of text to fill in (a name): resolves with
+     the text, or null when cancelled. o: { title, text, note, value, label,
+     ok, check(v) -> message when the text will not do } */
+  function askText(o) {
+    return new Promise(function (res) {
+      var prev = document.activeElement, back, msg = hh('p', { class: 'small', style: { color: 'var(--bad)', 'min-height': '1em' } });
+      var inp = hh('input', { type: 'text', class: 'input', value: o.value || '', 'aria-label': o.label || o.title || 'Name', placeholder: o.placeholder || '',
+        style: { width: '100%' }, onkeydown: function (e) { if (e.key === 'Enter') { e.preventDefault(); ok(); } } });
+      function done(v) { document.removeEventListener('keydown', key, true); back.remove(); if (prev && prev.focus) prev.focus(); res(v); }
+      function ok() {
+        var v = inp.value.trim(), bad = !v ? 'Give a name.' : o.check ? o.check(v) : '';
+        if (bad) { msg.textContent = bad; inp.focus(); return; }
+        done(v);
+      }
+      var key = function (e) { if (e.key === 'Escape') { e.preventDefault(); done(null); } };
+      var box = hh('div', { class: 'choice', role: 'dialog', 'aria-modal': 'true', 'aria-label': o.title || 'Name' },
+        o.title ? hh('h3', null, o.title) : null, o.text ? hh('p', null, o.text) : null,
+        o.label ? hh('label', { class: 'small muted' }, o.label) : null, inp, msg, o.note ? hh('p', { class: 'small muted' }, o.note) : null, o.extra || null,
+        hh('div', { class: 'row' }, hh('button', { class: 'btn ghost', onclick: function () { done(null); } }, 'Cancel'),
+          hh('button', { class: 'btn primary', onclick: ok }, o.ok || 'Save')));
+      back = hh('div', { class: 'choice-back', onclick: function (e) { if (e.target === back) done(null); } }, box);
+      document.body.appendChild(back);
+      document.addEventListener('keydown', key, true);
+      setTimeout(function () { inp.focus(); inp.select(); }, 0);
+    });
+  }
   /* a larger panel over the page: a title bar with a close button, a body
      that scrolls and an optional row of buttons at the foot. Escape, the
      backdrop or the close button shut it. Returns {close, body, box}. */
@@ -20728,8 +20754,43 @@ var UI = (function () {
     return dlP;
   }
   function inViewer() { return !!(window.claude && typeof window.claude.use === 'function'); }
-  function saveFile(name, data, mime) {
+  /* Where a file goes. Browsers that offer a save dialog to pages (Chrome and
+     Edge on a computer) ask for the folder and the name each time, starting
+     in the folder used last; the others put it in their download folder (or
+     ask, when "ask where to save each file" is on in their settings). The
+     dialog must open while the click that asked for it is fresh, so slow
+     saves (a session, a bundle) ask first with pickSave and write after.
+     Resolves with a file to write to, 'cancel', or null (download instead). */
+  function canPick() { return typeof window.showSaveFilePicker === 'function' && !inViewer() && store.get('askWhere', true) !== false; }
+  function pickSave(name, mime) {
+    if (!canPick()) return Promise.resolve(null);
+    var m = /(\.[A-Za-z0-9]{1,8})$/.exec(name), acc = {};
+    if (m) acc[mime || 'application/octet-stream'] = [m[1].toLowerCase()];
+    function ask(typed) {
+      var o = { suggestedName: name, id: 'murosense' };
+      if (typed && m) { o.types = [{ description: m[1].slice(1).toUpperCase() + ' file', accept: acc }]; }
+      return window.showSaveFilePicker(o);
+    }
+    function no(e) { return e && e.name === 'AbortError' ? 'cancel' : null; }
+    return ask(true).catch(function (e) { return e && e.name === 'TypeError' ? ask(false).catch(no) : no(e); });
+  }
+  function writeTo(fh, blob) {
+    return fh.createWritable().then(function (w) { return w.write(blob).then(function () { return w.close(); }); })
+      .then(function () { toast('Saved ' + fh.name); return true; }, function (e) { toast('Could not write ' + fh.name + ': ' + (e && e.message ? e.message : e)); return false; });
+  }
+  /* target: the answer of an earlier pickSave (omitted: ask now) */
+  function saveFile(name, data, mime, target) {
+    if (UI.filePrefix) name = UI.filePrefix(name);
     var blob = data instanceof Blob ? data : new Blob([data], { type: mime || 'application/octet-stream' });
+    if (target === 'cancel') return Promise.resolve(false);
+    if (target && target.createWritable) return writeTo(target, blob);
+    if (target === undefined && canPick()) {
+      return pickSave(name, mime || blob.type).then(function (fh) {
+        if (fh === 'cancel') return false;
+        if (fh && fh.createWritable) return writeTo(fh, blob);
+        return saveFile(name, blob, mime, null);
+      });
+    }
     return downloads().then(function (dl) {
       if (dl) {
         return dl.save({ filename: name, data: blob }).then(function () { toast('Saved ' + name); return true; }, function (e) {
@@ -20806,7 +20867,7 @@ var UI = (function () {
   }
 
   return { h: hh, s: s, clear: clear, $: $, $$: $$, fx: fx, signed: signed, pct: pct, big: big, sci: sci, sup: sup, bytes: bytes, secs: secs,
-           esc: esc, plural: plural, toast: toast, choose: choose, modal: modal, saveFile: saveFile, copyText: copyText, store: store, debounce: debounce, css: css, icon: icon,
+           esc: esc, plural: plural, toast: toast, choose: choose, askText: askText, modal: modal, saveFile: saveFile, pickSave: pickSave, canPick: canPick, copyText: copyText, store: store, debounce: debounce, css: css, icon: icon,
            inViewer: inViewer, downloads: downloads };
 })();
 
@@ -22478,7 +22539,7 @@ var APP = (function () {
   var LABELS = { home: 'Home', analyse: 'Analyse', compare: 'Compare', structure: 'Structure', library: 'Library', guide: 'Guide' };
   var DEFAULT_SETTINGS = { profile: 'auto', reduction: 'auto', fdr: 0.01, maxOligomer: '', tol: 'auto', ms2: true, uv: true, rt0: '', rt1: '', focused: true, refs: true,
                            autoLibs: false, polarity: 'auto' };
-  var NAME = 'MuroSense', VERSION = '3.18';
+  var NAME = 'MuroSense', VERSION = '3.19';
 
   var A = {
     NAME: NAME, VERSION: VERSION, runs: [], current: null, view: 'home', views: {},
@@ -22817,6 +22878,7 @@ var APP = (function () {
     if (A.ref && A.ref.group) ref = { group: A.ref.group };
     else if (A.ref && A.ref.run) { var ri = runs.map(function (r) { return r.id; }).indexOf(A.ref.run); if (ri >= 0) ref = { run: ri }; }
     var parts = ['{"format":"murosense-session","version":1,"savedAt":' + JSON.stringify(new Date().toISOString()) + ',"app":' + JSON.stringify(NAME + ' ' + VERSION) +
+                 (A.sessionName ? ',"sessionName":' + JSON.stringify(A.sessionName) : '') +
                  ',"libraries":' + JSON.stringify(A.libraries) + ',"current":' + JSON.stringify(Math.max(0, runs.indexOf(A.currentRun()))) + (ref ? ',"ref":' + JSON.stringify(ref) : '') + ',"runs":['];
     runs.forEach(function (run, i) {
       var copy = {};
@@ -22827,18 +22889,53 @@ var APP = (function () {
     return parts;
   }
   A.sessionParts = sessionParts;
+  /* ---------------- the session's name ----------------
+     A session can carry a name; the session file, the bundle, the comparison
+     workbook and every table or figure saved from Compare are named after it.
+     Saving a session or a bundle asks for it (the last one given filled in). */
+  A.sessionName = '';
+  function fileSafe(s) { return String(s || '').trim().replace(/[\\/:*?"<>|\u0000-\u001f]+/g, '_').replace(/\s+/g, '_').replace(/_+/g, '_').replace(/^[_.]+|[_.]+$/g, '').slice(0, 80); }
+  A.fileSafe = fileSafe;
+  A.fileBase = function () { return fileSafe(A.sessionName) || 'MuroSense'; };
+  /* what is saved from Compare carries the session's name instead of MuroSense */
+  UI.filePrefix = function (n) { return A.sessionName && A.view === 'compare' ? n.replace(/^murosense(?=[_.])/i, fileSafe(A.sessionName)) : n; };
+  /* what: 'session', 'bundle' or 'workbook'; resolves with the name, or null */
+  A.nameSession = function (what) {
+    var sug = A.sessionName || 'MuroSense_' + new Date().toISOString().slice(0, 10);
+    var ask = h('label', { class: 'check small' }, h('input', { type: 'checkbox', checked: UI.store.get('askWhere', true) !== false,
+      onchange: function (e) { UI.store.set('askWhere', e.target.checked); } }), 'Ask where to save each file (folder and name)');
+    return UI.askText({ title: 'Name this session', value: sug, label: 'Session name', ok: what === 'workbook' ? 'Save the workbook' : what === 'bundle' ? 'Save the bundle' : what === 'name' ? 'Use this name' : 'Save the session',
+      text: what === 'name' ? 'The session file, the bundle, the comparison workbook and every table or figure saved from Compare are named after it.' :
+        'The ' + (what === 'bundle' ? 'bundle' : what === 'workbook' ? 'comparison workbook' : 'session file') + ' is saved under this name, and so are the comparison workbook and every table or figure saved from Compare.',
+      note: typeof window.showSaveFilePicker === 'function' ? 'Next you choose the folder (the one used last comes up first).' :
+        'This browser saves into its download folder; to be asked for a folder each time, turn on “Always ask where to save files” in its settings.',
+      extra: typeof window.showSaveFilePicker === 'function' ? ask : null,
+      check: function (v) { return fileSafe(v) ? '' : 'Use some letters or digits.'; } })
+      .then(function (v) {
+        if (v === null) return null;
+        A.sessionName = v; A.emit('session');
+        return v;
+      });
+  };
   function saveSession() {
     var runs = A.runs.filter(function (r) { return r.status === 'done' && r.result; });
     if (!runs.length) { UI.toast('No finished runs to save yet.'); return Promise.resolve(false); }
-    var parts = sessionParts(runs);
-    var blob = new Blob(parts, { type: 'application/json' }), stamp = new Date().toISOString().slice(0, 10);
-    var name = 'MuroSense_session_' + stamp + '_' + runs.length + 'runs.murosense-session.json';
-    if (typeof CompressionStream === 'function') {
-      return new Response(blob.stream().pipeThrough(new CompressionStream('gzip'))).blob()
-        .then(function (gz) { return UI.saveFile(name + '.gz', gz, 'application/gzip'); })
-        .catch(function () { return UI.saveFile(name, blob, 'application/json'); });
-    }
-    return UI.saveFile(name, blob, 'application/json');
+    var gz = typeof CompressionStream === 'function';
+    return A.nameSession('session').then(function (nm) {
+      if (nm === null) return false;
+      var name = fileSafe(nm) + '.murosense-session.json' + (gz ? '.gz' : '');
+      /* the folder is asked first, while the click is fresh; then the file is made */
+      return UI.pickSave(name, gz ? 'application/gzip' : 'application/json').then(function (target) {
+        if (target === 'cancel') return false;
+        var blob = new Blob(sessionParts(runs), { type: 'application/json' });
+        if (gz) {
+          return new Response(blob.stream().pipeThrough(new CompressionStream('gzip'))).blob()
+            .then(function (z) { return UI.saveFile(name, z, 'application/gzip', target); })
+            .catch(function () { return UI.saveFile(name.replace(/\.gz$/, ''), blob, 'application/json', target && target.createWritable ? target : null); });
+        }
+        return UI.saveFile(name, blob, 'application/json', target);
+      });
+    });
   }
   /* read a saved file, unpacking gzip when it is compressed */
   function readDoc(file) {
@@ -22871,6 +22968,7 @@ var APP = (function () {
     });
     if (!added.length) { UI.toast(fname + ' holds no runs.'); return; }
     /* the session's reference, unless one is chosen already */
+    if (doc.sessionName && !A.sessionName) { A.sessionName = String(doc.sessionName); A.emit('session'); }
     if (!A.ref && doc.ref) {
       if (doc.ref.group) A.ref = { group: String(doc.ref.group) };
       else if (doc.ref.run >= 0 && added[doc.ref.run]) A.ref = { run: added[doc.ref.run].id };
@@ -25248,15 +25346,25 @@ APP.bundle = (function () {
     if (!runs.length) { UI.toast('No finished runs to save yet.'); return Promise.resolve(false); }
     /* the mzML files themselves are offered when this session still holds them */
     var raw = runs.filter(function (r) { return r.file && r.file.size; }), rawMB = raw.reduce(function (a, r) { return a + r.file.size; }, 0) / 1e6;
-    if (!raw.length) return pack(runs, false);
-    return UI.choose({ title: 'Save bundle', text: 'Everything about ' + UI.plural(runs.length, 'sample') + ' in one .zip: results, evidence, parameters, library, structures, figures and a methods text.',
+    /* the name first, then (for a bundle with raw data on hand) what goes in,
+       then the folder, asked while the click is fresh; then the packing */
+    function go(withRaw) {
+      var zipName = A.fileBase() + '_bundle.zip';
+      return UI.pickSave(zipName, 'application/zip').then(function (target) { return target === 'cancel' ? false : pack(runs, withRaw, target); });
+    }
+    return A.nameSession('bundle').then(function (nm) {
+      if (nm === null) return false;
+      if (!raw.length) return go(false);
+      return ask();
+    });
+    function ask() { return UI.choose({ title: 'Save bundle', text: 'Everything about ' + UI.plural(runs.length, 'sample') + ' in one .zip: results, evidence, parameters, library, structures, figures and a methods text.',
       note: 'The mzML files can go in too (' + UI.plural(raw.length, 'file') + ', ' + (rawMB >= 1000 ? (rawMB / 1000).toFixed(1) + ' GB' : Math.round(rawMB) + ' MB') + ', stored as they are), so the bundle holds the raw data as well.',
       options: [{ label: 'With the mzML files', value: 'raw' }, { label: 'Results only', value: 'res', primary: true }] })
-      .then(function (v) { return v ? pack(runs, v === 'raw') : false; });
+      .then(function (v) { return v ? go(v === 'raw') : false; }); }
   }
-  function pack(runs, withRaw) {
+  function pack(runs, withRaw, target) {
     UI.toast('Packing the bundle of ' + UI.plural(runs.length, 'sample') + (withRaw ? ', with the mzML files' : '') + '…', 8000);
-    var stamp = new Date().toISOString().slice(0, 10), root = 'MuroSense_bundle_' + stamp + '/', files = [];
+    var base = A.fileBase(), root = base + '_bundle/', files = [];
     function add(name, data) { if (data !== null && data !== undefined) files.push({ name: root + name, data: data }); }
     return new Promise(function (res) { setTimeout(res, 30); }).then(function () {
       var parts = A.views.compare && A.views.compare.bundleParts ? A.views.compare.bundleParts(runs) : { comparison: [], single: {} };
@@ -25284,11 +25392,11 @@ APP.bundle = (function () {
       A.libraries.forEach(function (lib) {
         add('library/my_libraries/' + safe(lib.name) + '.murosense-library.json', JSON.stringify({ format: 'murosense-library', version: 1, savedAt: new Date().toISOString(), library: lib }, null, 1));
       });
-      add('session/MuroSense_session_' + stamp + '.murosense-session.json', A.sessionParts(runs).join(''));
+      add('session/' + base + '.murosense-session.json', A.sessionParts(runs).join(''));
       files.unshift({ name: root + 'README.txt', data: readme(runs, folders, withRaw) });
       return UI.files.zipAsync(files);
     }).then(function (z) {
-      return UI.saveFile('MuroSense_bundle_' + stamp + '_' + runs.length + (runs.length === 1 ? 'sample' : 'samples') + '.zip', z, 'application/zip');
+      return UI.saveFile(base + '_bundle.zip', z, 'application/zip', target);
     }).catch(function (e) { UI.toast('The bundle could not be made: ' + (e && e.message ? e.message : e)); return false; });
   }
   A.saveBundle = save;
@@ -25547,7 +25655,10 @@ APP.views.compare = (function () {
         h('button', { class: 'btn sm', type: 'button', onclick: function () { st.colSort = null; renderAll(); } }, 'Back to your order'));
     }
     root.appendChild(h('div', { class: 'card' },
-      h('div', { class: 'card-h' }, h('h3', null, 'Samples ', h('span', { class: 'muted small samp-count' }, nSel + ' of ' + runs.length)),
+      h('div', { class: 'card-h' }, h('div', { class: 'row', style: { gap: '12px', 'flex-wrap': 'wrap', 'align-items': 'baseline' } },
+          h('h3', null, 'Samples ', h('span', { class: 'muted small samp-count' }, nSel + ' of ' + runs.length)),
+          h('button', { class: 'linkish small sess-name', type: 'button', title: 'The session’s name: saved files are named after it. Click to change it.',
+            onclick: function () { A.nameSession('name'); } }, sessLabel())),
         h('div', { class: 'row', style: { gap: '6px', 'flex-wrap': 'wrap' } },
           h('button', { class: 'btn sm', onclick: function () { setAll(true); } }, 'All'),
           h('button', { class: 'btn sm', onclick: function () { setAll(false); } }, 'None'),
@@ -25718,6 +25829,16 @@ APP.views.compare = (function () {
     rows.forEach(function (p) { [p.inp, p.grp].forEach(function (el) { el.addEventListener('keydown', function (e) { if (e.key === 'Enter') { e.preventDefault(); if (el === p.grp) fillRef(); apply(); } }); }); });
   }
   /* the selected samples, in column order */
+  /* a section drawn again (sorted, filtered) keeps its tables scrolled where
+     they were: the positions are put back once the new tables stand */
+  function holdScroll(box) {
+    var keep = UI.$$('.tbl-wrap', box).map(function (w) { return { l: w.scrollLeft, t: w.scrollTop }; });
+    if (!keep.some(function (k) { return k.l || k.t; })) return;
+    Promise.resolve().then(function () { UI.$$('.tbl-wrap', box).forEach(function (w, i) { var k = keep[i]; if (k) { w.scrollLeft = k.l; w.scrollTop = k.t; } }); });
+  }
+  /* the session's name on the Samples card */
+  function sessLabel() { return A.sessionName ? 'Session: ' + A.sessionName : 'Name this session'; }
+  A.on('session', function () { if (root) UI.$$('.sess-name', root).forEach(function (b) { b.textContent = sessLabel(); }); });
   function chosen() {
     var list = done().filter(function (r) { return sel[r.id]; });
     if (st.colSort) {
@@ -25746,7 +25867,33 @@ APP.views.compare = (function () {
              marks: UI.store.get('cmpMarks', 'shade'), labels: UI.store.get('cmpLabels', 'top'),
              nameBy: UI.store.get('cmpNameBy', 'share'), hidden: {},
              tol: UI.store.get('cmpRtTol', 0.3), align: UI.store.get('cmpAlign', false),
-             rowH: UI.store.get('cmpRowH', 96), fullH: UI.store.get('cmpFullH', false), hiddenRuns: {} };
+             rowH: UI.store.get('cmpRowH', 96), fullH: UI.store.get('cmpFullH', false), hiddenRuns: {},
+             shadeBy: UI.store.get('cmpShadeBy', 'presence') };
+  /* What colours the peak shades (and lines) down the stack: whether a
+     species is in every sample (the default), its oligomer class or stem
+     length, as in the profile metrics, or one feature (with it, or not). */
+  var SHADES = [['presence', 'Presence (default): grey in every sample, red missing from some'], ['oligo', 'Oligomer: monomer, dimer, trimer, ≥ tetramer'],
+    ['stem', 'Stem length: tri, tetra, penta'], ['anh', 'Feature: anhydro chain ends'], ['x43', 'Feature: 4-3 cross-link'], ['x33', 'Feature: 3-3 cross-link'],
+    ['lpp', 'Feature: Lpp remnant'], ['amid', 'Feature: amidation'], ['deac', 'Feature: de-N-acetylation'], ['oac', 'Feature: O-acetylation'],
+    ['gly', 'Feature: Gly at position 4 or 5'], ['bridge', 'Feature: cross-bridge']];
+  function isMuro(r) { return r && r.k >= 1 && r.nStem >= 1 && ['chain', 'precursor', 'recycling', 'peptide-only'].indexOf(r.cls) < 0; }
+  /* a species' class under a colouring: { key, label, color (a CSS variable) } */
+  function shadeClass(r, mode) {
+    var other = { key: 'z', label: 'Other species', color: '--faint' };
+    if (!isMuro(r)) return other;
+    var U = r.unitInfo || [];
+    if (mode === 'oligo') { var o = OLIGO[Math.min(4, r.nStem) - 1]; return { key: o[0], label: o[1], color: o[2] }; }
+    if (mode === 'stem') {
+      var L = U.map(function (u) { return u.len; }).filter(function (v, i, a) { return a.indexOf(v) === i; });
+      if (L.length === 1 && L[0] >= 3 && L[0] <= 5) return [{ key: '3', label: 'Tri stems', color: '--glc' }, { key: '4', label: 'Tetra stems', color: '--accent' }, { key: '5', label: 'Penta stems', color: '--mur' }][L[0] - 3];
+      return { key: '6', label: 'Mixed or other stems', color: '--uv' };
+    }
+    var has = mode === 'anh' ? r.nAnh > 0 : mode === 'x43' ? (r.links || []).indexOf('4-3') >= 0 : mode === 'x33' ? (r.links || []).indexOf('3-3') >= 0 :
+      mode === 'gly' ? U.some(function (u) { return /G/.test((u.stem || '').slice(3)); }) : mode === 'bridge' ? U.some(function (u) { return !!u.bridge; }) :
+      U.some(function (u) { return !!u[mode]; });
+    var nm = (SHADES.filter(function (x) { return x[0] === mode; })[0] || ['', ''])[1].replace(/^Feature: /, '');
+    return has ? { key: 'a', label: 'With ' + nm, color: '--accent' } : { key: 'b', label: 'Without', color: '--faint' };
+  }
   var DL = { layout: 'stack', labels: 'shown', fmt: 'svg' };
   /* Which species the figure names (and marks): those reaching a share
      ('share'), those the species table below shows with its filters
@@ -25853,7 +26000,7 @@ APP.views.compare = (function () {
       by[k].sort(function (p, q) { return q.s - p.s || p.a - q.a; }).forEach(function (it) {
         var e = null, bd = Infinity;
         cl.forEach(function (c) { var d = Math.abs(c.c - it.a); if (d <= tol && d < bd) { bd = d; e = c; } });
-        if (!e) { e = { c: it.a, fstr: k, short: it.x.short, name: it.x.name, runs: {}, rtBy: {}, fwBy: {}, bestBy: {}, fw: 0, max: 0 }; cl.push(e); }
+        if (!e) { e = { c: it.a, fstr: k, short: it.x.short, name: it.x.name, row: it.x, runs: {}, rtBy: {}, fwBy: {}, bestBy: {}, fw: 0, max: 0 }; cl.push(e); }
         var ri = it.ri;
         e.runs[ri] = (e.runs[ri] || 0) + it.s;
         if (e.bestBy[ri] === undefined) { e.bestBy[ri] = it.s; e.rtBy[ri] = it.x.rt; e.fwBy[ri] = it.x.fwhm || 0.05; }
@@ -25895,7 +26042,7 @@ APP.views.compare = (function () {
     var m = 0;
     for (var i = 0; i < T.x.length; i++) if (T.x[i] >= x0 && T.x[i] <= x1 && T.y[i] > m) m = T.y[i];
     var sp = D.species.filter(function (e) { return e.runs[ri] > 0 && e.rtBy[ri] >= x0 && e.rtBy[ri] <= x1 && (D.mode !== 'share' || e.runs[ri] >= sk.min); }).map(function (e) {
-      return { key: e.key, fstr: e.fstr, short: e.short, name: e.name, runs: { 0: e.runs[ri] }, rtBy: { 0: e.rtBy[ri] }, fwBy: { 0: e.fwBy[ri] }, fw: e.fwBy[ri] || e.fw,
+      return { key: e.key, fstr: e.fstr, short: e.short, name: e.name, row: e.row, runs: { 0: e.runs[ri] }, rtBy: { 0: e.rtBy[ri] }, fwBy: { 0: e.fwBy[ri] }, fw: e.fwBy[ri] || e.fw,
                max: e.runs[ri], n: 1, inAll: true, rt: e.rtBy[ri], rtA: e.rtBy[ri], nPeaks: e.nPeaks, peakNo: e.peakNo };
     });
     return { traces: [{ run: T.run, x: T.x, y: T.y, max: m, off: 0 }], x0: x0, x1: x1, species: sp, trace: D.trace, hasUV: D.hasUV, wl: D.wl, mode: D.mode,
@@ -25953,19 +26100,31 @@ APP.views.compare = (function () {
     /* species marks down the stack, bending through each sample's own peak
        (or where the peak would be, in a sample without it): grey (or a thin
        ink line) for those in every sample, red for those missing from some */
-    var nR = D.traces.length;
+    var nR = D.traces.length, byCls = sk.shadeBy && sk.shadeBy !== 'presence' && marks !== 'none', seen = {};
+    if (byCls) {
+      /* the classes shown, in their order, as a legend beside the caption */
+      marked.forEach(function (e) { var q = shadeClass(e.row, sk.shadeBy); seen[q.key] = q; });
+      var lx = single ? padL + measureText(runs[0].name, 14, 700) + 26 : padL + measureText(cap, 11.5, 400) + 26;
+      Object.keys(seen).sort().forEach(function (k) {
+        var q = seen[k];
+        head.push('<rect x="' + f1(lx) + '" y="8" width="10" height="10" rx="2" style="fill:' + C(q.color, '#888') + '" opacity="' + (q.color === '--faint' ? 0.45 : 0.75) + '"/>');
+        head.push(txt(lx + 14, 17, esc(q.label), 11, ink2));
+        lx += 14 + measureText(q.label, 11, 400) + 16;
+      });
+    }
     if (marks !== 'none') marked.forEach(function (e) {
-      var c = e.inAll ? (marks === 'line' ? ink : grey) : diff, w = Math.max(0.08, 1.2 * e.fw), L = [], R = [], ri;
+      var q = byCls ? shadeClass(e.row, sk.shadeBy) : null;
+      var c = q ? C(q.color, '#888') : e.inAll ? (marks === 'line' ? ink : grey) : diff, w = Math.max(0.08, 1.2 * e.fw), L = [], R = [], ri;
       if (marks === 'line') {
         L.push(f1(xs(e.rt)) + ',' + (rowsTop - 4));
         for (ri = 0; ri < nR; ri++) { var lx = f1(xs(posOf(D, e, ri))); L.push(lx + ',' + f1(rowTop(ri) + headH + rowH * 0.08), lx + ',' + f1(ri === nR - 1 ? yA : rowBase(ri))); }
-        body.push('<polyline points="' + L.join(' ') + '" style="fill:none;stroke:' + c + ';stroke-width:0.7;stroke-linejoin:round" opacity="' + (e.inAll ? 0.7 : 0.85) + '"/>');
+        body.push('<polyline points="' + L.join(' ') + '" style="fill:none;stroke:' + c + ';stroke-width:' + (q ? 1 : 0.7) + ';stroke-linejoin:round" opacity="' + (q ? (q.color === '--faint' ? 0.45 : 0.85) : e.inAll ? 0.7 : 0.85) + '"/>');
         return;
       }
       function edge(t, y) { var a = xs(t - w), b = Math.max(a + 2, xs(t + w)); L.push(f1(a) + ',' + f1(y)); R.push(f1(b) + ',' + f1(y)); }
       edge(e.rt, rowsTop - 4);
       for (ri = 0; ri < nR; ri++) { var t = posOf(D, e, ri); edge(t, rowTop(ri) + headH + rowH * 0.08); edge(t, ri === nR - 1 ? yA : rowBase(ri)); }
-      body.push('<polygon points="' + L.concat(R.reverse()).join(' ') + '" style="fill:' + c + '" opacity="' + (e.inAll ? (X ? 0.14 : 0.16) : (X ? 0.13 : 0.18)) + '"/>');
+      body.push('<polygon points="' + L.concat(R.reverse()).join(' ') + '" style="fill:' + c + '" opacity="' + (q ? (q.color === '--faint' ? (X ? 0.12 : 0.14) : (X ? 0.22 : 0.26)) : e.inAll ? (X ? 0.14 : 0.16) : (X ? 0.13 : 0.18)) + '"/>');
     });
     /* each trace with its own y axis */
     D.traces.forEach(function (T, ri) {
@@ -26196,6 +26355,9 @@ APP.views.compare = (function () {
     var fullIn = h('input', { type: 'checkbox', checked: !!sk.fullH, onchange: function () { sk.fullH = fullIn.checked; UI.store.set('cmpFullH', sk.fullH); draw(); } });
     var marksSeg = segBtns([['shade', 'Shades', 'A shaded band down the stack where each named species elutes'], ['line', 'Lines', 'A thin line down the stack at each named species'], ['none', 'None']],
       sk.marks, function (v) { sk.marks = v; UI.store.set('cmpMarks', v); draw(); }, 'Mark the species');
+    var shadeSel = h('select', { class: 'input', 'aria-label': 'Colour the peak marks by', style: { width: 'auto' }, title: 'What colours the shades (or lines) down the stack: whether a species is in every sample, or its kind, as in the profile metrics',
+      onchange: function () { sk.shadeBy = shadeSel.value; UI.store.set('cmpShadeBy', sk.shadeBy); draw(); } },
+      SHADES.map(function (o) { return h('option', { value: o[0], selected: sk.shadeBy === o[0] }, o[0] === 'presence' ? 'Presence (default)' : o[1].replace(/: monomer.*|: tri, .*/, '')); }));
     var labSeg = segBtns([['top', 'Above'], ['peaks', 'Over peaks', 'Each sample’s own peaks named'], ['none', 'None']],
       sk.labels, function (v) { sk.labels = v; UI.store.set('cmpLabels', v); draw(); }, 'Names');
     function quick(fmt) { if (runs.length) saveStack(runs, { layout: 'stack', labels: 'shown', fmt: fmt }); }
@@ -26214,6 +26376,7 @@ APP.views.compare = (function () {
         h('label', { class: 'check small' }, com, ' one scale'),
         many ? h('label', { class: 'check small' }, dif, ' show differences') : null,
         h('span', { class: 'row small muted', style: { gap: '6px' } }, 'Mark peaks', marksSeg),
+        h('label', { class: 'row small muted', style: { gap: '6px' } }, 'Colour by', shadeSel),
         h('span', { class: 'row small muted', style: { gap: '6px' } }, 'Names', labSeg)),
       h('div', { class: 'filters stack-ctl' },
         many ? h('label', { class: 'small row', style: { gap: '4px' }, title: 'Peaks of one composition that elute within this many minutes of each other (after any shift between the samples) are one species; isomers further apart are named on their own' }, 'Match peaks ±', tolIn, 'min') : null,
@@ -26283,7 +26446,10 @@ APP.views.compare = (function () {
   }
   function renderQuality() {
     if (skip('qc')) return;
-    var box = boxes.qc; UI.clear(box);
+    var box = boxes.qc;
+    /* sorting or filtering keeps the table where it was scrolled to */
+    var w0 = UI.$('.tbl-wrap', box), keep = w0 ? { l: w0.scrollLeft, t: w0.scrollTop } : null;
+    UI.clear(box);
     var runs = done();
     if (!runs.length) return;
     var shifts = runs.length > 1 ? rtShifts(runs, refIdx(runs)) : null;
@@ -26351,6 +26517,8 @@ APP.views.compare = (function () {
         '; total PG against ' + (A.refRuns().length ? 'the reference (' + A.refLabel() + ')' : 'the median sample (choose a reference above to judge against it)') + ', with the low-PG threshold of Total PG; the time shift against the sample the chromatograms align to. ' +
         'Sorting orders this table only. A sample’s name opens its Quality tab, with the evidence behind each check.')));
     syncQcRows();
+    var w1 = UI.$('.tbl-wrap', box);
+    if (keep && w1) { w1.scrollLeft = keep.l; w1.scrollTop = keep.t; }
   }
 
   /* ---------------- total PG (UV) ----------------
@@ -26378,7 +26546,7 @@ APP.views.compare = (function () {
   var pgView = 'area';
   function renderPG() {
     if (skip('pg')) return;
-    var box = boxes.pg; UI.clear(box);
+    var box = boxes.pg; holdScroll(box); UI.clear(box);
     var cs = cols(), withUV = cs.filter(function (c) { return pgCol(c) !== null; });
     var card = h('div', { class: 'card' });
     box.appendChild(card);
@@ -26460,7 +26628,7 @@ APP.views.compare = (function () {
      then lead the table. */
   function renderTable() {
     if (skip('table')) return;
-    var box = boxes.table; UI.clear(box);
+    var box = boxes.table; holdScroll(box); UI.clear(box);
     var cs = cols(), R = refCol(), rel = R ? st.relM : 'value';
     var head = h('tr', null, h('th', { class: 'stick' }, 'Metric'),
       rel !== 'value' ? h('th', { class: 'num refcol', title: 'The reference: ' + A.refLabel(), 'data-x': 'Reference: ' + A.refLabel() }, h('span', { class: 'samp-ref' }, 'ref'), ' ', short(R.name)) : null,
@@ -26610,7 +26778,7 @@ APP.views.compare = (function () {
   var spList = [], spRuns = [];
   function renderSpecies() {
     if (skip('species')) return;
-    var box = boxes.species; UI.clear(box);
+    var box = boxes.species; holdScroll(box); UI.clear(box);
     spRuns = cols();
     var R = refCol(), rel = R ? st.relS : 'value', inShown = R && spRuns.some(function (c) { return c.id === R.id; });
     spList = matrix(spRuns, null, R && !inShown ? [R] : null);
@@ -26746,9 +26914,37 @@ APP.views.compare = (function () {
      light for more on a dark one) and blue–grey–red around the mean for
      z-scores. It saves as SVG or PNG in the light theme. */
   var hm = { what: UI.store.get('hmWhat', 'metrics'), scaleM: 'z', scaleS: 'z', clusterR: false, clusterC: false, values: false,
-             mSel: null, sSel: null };
+             mSel: null, sSel: null, pal: UI.store.get('hmPal', 'bluered'), rev: !!UI.store.get('hmRev', false) };
   var SEQ = ['#cde2fb', '#b7d3f6', '#9ec5f4', '#86b6ef', '#6da7ec', '#5598e7', '#3987e5', '#2a78d6', '#256abf', '#1c5cab', '#184f95', '#104281', '#0d366b'];
   var DIV = { light: ['#1c5cab', '#f0efec', '#c0392b'], dark: ['#5598e7', '#383835', '#e66767'] }, ZMAX = 2;
+  /* The colour schemes: a diverging one (low, middle, high) for scores
+     around a centre (z-scores, ratios, differences) with a sequential ramp
+     for plain values; or one ramp for both (viridis, magma, greys), the
+     centre then its middle colour. light: the ramp starts light (it is
+     turned round on the dark theme). */
+  var PALS = [
+    { id: 'bluered', name: 'Blue – red', div: DIV.light, seq: SEQ, light: true },
+    { id: 'blueorange', name: 'Blue – orange (colour-blind safe)', div: ['#2166ac', '#f1efec', '#c75b00'],
+      seq: ['#fde9d2', '#fdd0a2', '#fdae6b', '#fd8d3c', '#f16913', '#d94801', '#a63603', '#7f2704'], light: true },
+    { id: 'purplegreen', name: 'Purple – green', div: ['#762a83', '#f1efee', '#1b7837'],
+      seq: ['#e5f5e0', '#c7e9c0', '#a1d99b', '#74c476', '#41ab5d', '#238b45', '#006d2c', '#00441b'], light: true },
+    { id: 'tealbrown', name: 'Teal – brown', div: ['#01665e', '#f2f0ea', '#8c510a'],
+      seq: ['#e0f3f0', '#b8e4dd', '#88d0c4', '#5ab4a8', '#35978f', '#1c7a72', '#01665e', '#003c30'], light: true },
+    { id: 'viridis', name: 'Viridis', seq: ['#440154', '#472d7b', '#3b528b', '#2c728e', '#21918c', '#28ae80', '#5ec962', '#addc30', '#fde725'] },
+    { id: 'magma', name: 'Magma', seq: ['#000004', '#1c1044', '#4f127b', '#812581', '#b5367a', '#e55964', '#fb8761', '#fec287', '#fcfdbf'] },
+    { id: 'greys', name: 'Greys (for print)', seq: ['#f7f7f7', '#d9d9d9', '#bdbdbd', '#969696', '#737373', '#525252', '#252525'], light: true }];
+  /* the colours in use: seq for plain values (0 to 1), divCol(u) for scores
+     around a centre (u from -1 to 1) */
+  function palette(dark) {
+    var P = PALS.filter(function (x) { return x.id === hm.pal; })[0] || PALS[0];
+    var seq = P.seq.slice(), div = P.div ? (P.id === 'bluered' && dark ? DIV.dark : P.div).slice() : null;
+    if (dark && P.light) seq.reverse();
+    if (dark && div) div[1] = '#383835';
+    if (hm.rev) { seq.reverse(); if (div) div.reverse(); }
+    var divCol = div ? function (u) { return u < 0 ? ramp([div[1], div[0]], Math.min(1, -u)) : ramp([div[1], div[2]], Math.min(1, u)); }
+      : function (u) { return ramp(seq, (Math.max(-1, Math.min(1, u)) + 1) / 2); };
+    return { seq: seq, div: div || [seq[0], seq[Math.floor(seq.length / 2)], seq[seq.length - 1]], divCol: divCol };
+  }
   var SECT_SHORT = { 'Oligomers, % of disaccharide-peptide units': 'Units', 'Cross-linking': 'Cross-linkage' };
   function hex2rgb(x) { return [parseInt(x.slice(1, 3), 16), parseInt(x.slice(3, 5), 16), parseInt(x.slice(5, 7), 16)]; }
   function rgb2hex(c) { return '#' + c.map(function (v) { var t = Math.max(0, Math.min(255, Math.round(v))).toString(16); return t.length < 2 ? '0' + t : t; }).join(''); }
@@ -26834,7 +27030,7 @@ APP.views.compare = (function () {
     if (mode === 'dr') rows.forEach(function (it) { it.vals.forEach(function (v) { if (v !== null && v !== undefined && it.ref !== null) dmax = Math.max(dmax, Math.abs(v - it.ref)); }); });
     if (!(dmax > 0)) dmax = 1;
     var theme = light ? 'light' : (document.documentElement.getAttribute('data-theme') || (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'));
-    var dark = theme === 'dark', seq = dark ? SEQ.slice().reverse() : SEQ, div = DIV[dark ? 'dark' : 'light'];
+    var dark = theme === 'dark', PL = palette(dark), seq = PL.seq, div = PL.div;
     var absent = dark ? '#262d2f' : '#eceeeb';
     var gmax = 0, gminPos = Infinity;
     rows.forEach(function (it) { it.vals.forEach(function (v) { if (v > gmax) gmax = v; if (v > 0 && v < gminPos) gminPos = v; }); });
@@ -26864,7 +27060,7 @@ APP.views.compare = (function () {
       it.fill = it.score.map(function (z, ci) {
         if (z === null || (!isM && !(it.vals[ci] > 0) && mode !== 'lr' && mode !== 'dr')) return absent;
         var zm = mode === 'z' ? ZMAX : mode === 'lr' ? LM : mode === 'dr' ? 1 : 0;
-        if (zm) return z < 0 ? ramp([div[1], div[0]], Math.min(1, -z / zm)) : ramp([div[1], div[2]], Math.min(1, z / zm));
+        if (zm) return PL.divCol(z / zm);
         return ramp(seq, z);
       });
     });
@@ -26873,7 +27069,7 @@ APP.views.compare = (function () {
     var vec = function (it) { return it.score.map(function (z) { return z === null ? (mode === 'z' ? 0 : 0) : z; }); };
     if (hm.clusterR && rows.length > 2) { var cr = cluster(rows.map(vec)); ri = cr.order; rTree = cr.tree; }
     if (hm.clusterC && runs.length > 2) { var cc = cluster(runs.map(function (r, c) { return rows.map(function (it) { var z = it.score[c]; return z === null ? 0 : z; }); })); ci = cc.order; cTree = cc.tree; }
-    return { isM: isM, all: all, rows: rows, mode: mode, ri: ri, ci: ci, rTree: rTree, cTree: cTree, seq: seq, div: div, absent: absent, gmax: gmax, lo: lo, hi: hi, LM: LM, dmax: dmax, R: R };
+    return { isM: isM, all: all, rows: rows, mode: mode, ri: ri, ci: ci, rTree: rTree, cTree: cTree, seq: seq, div: div, divCol: PL.divCol, absent: absent, gmax: gmax, lo: lo, hi: hi, LM: LM, dmax: dmax, R: R };
   }
   function fmtCell(Mo, it, v) {
     if (v === null || v === undefined) return '–';
@@ -26967,7 +27163,7 @@ APP.views.compare = (function () {
     out.push(txt(kx, ky, esc(keyTitle), 11.5, ink, ' font-weight="700"'));
     for (i = 0; i < n; i++) {
       var t0 = i / (n - 1), col;
-      if (Mo.mode === 'z' || Mo.mode === 'lr' || Mo.mode === 'dr') { var z = -1 + 2 * t0; col = z < 0 ? ramp([Mo.div[1], Mo.div[0]], Math.min(1, -z)) : ramp([Mo.div[1], Mo.div[2]], Math.min(1, z)); }
+      if (Mo.mode === 'z' || Mo.mode === 'lr' || Mo.mode === 'dr') { col = Mo.divCol(-1 + 2 * t0); }
       else col = ramp(Mo.seq, t0);
       out.push('<rect x="' + (kx + i * kw / n).toFixed(1) + '" y="' + (ky + 7) + '" width="' + (kw / n + 0.6).toFixed(1) + '" height="' + kh + '" style="fill:' + col + '"/>');
     }
@@ -27076,7 +27272,12 @@ APP.views.compare = (function () {
     if (!R) { if (hm.scaleM === 'lr') hm.scaleM = 'z'; if (hm.scaleS === 'lr' || hm.scaleS === 'dr') hm.scaleS = 'z'; }
     var Mo = heatModel(runs, false);
     var whatSeg = segBtns([['metrics', 'Profile metrics'], ['species', 'Species']], hm.what, function (v) { hm.what = v; UI.store.set('hmWhat', v); renderHeat(); }, 'Rows');
-    var refOpt = R ? [['lr', 'Ratio to reference', 'log₂ of each value over the reference’s (' + A.refLabel() + '): red more, blue less']] : [];
+    var refOpt = R ? [['lr', 'Ratio to reference', 'log₂ of each value over the reference’s (' + A.refLabel() + '): the high colour more, the low colour less']] : [];
+    /* the colour scheme, and the high and low colours swapped */
+    var palSel = h('select', { class: 'input', 'aria-label': 'Colour scheme', style: { width: 'auto' }, title: 'The colours of the heat map (saved figures use them too)',
+      onchange: function () { hm.pal = palSel.value; UI.store.set('hmPal', hm.pal); renderHeat(); } },
+      PALS.map(function (x) { return h('option', { value: x.id, selected: hm.pal === x.id }, x.name); }));
+    var revIn = h('input', { type: 'checkbox', checked: hm.rev, onchange: function () { hm.rev = revIn.checked; UI.store.set('hmRev', hm.rev); renderHeat(); } });
     var scaleSeg = isM ? segBtns([['z', 'Row z-score'], ['minmax', 'Row 0–1']].concat(refOpt), hm.scaleM, function (v) { hm.scaleM = v; renderHeat(); }, 'Colour scale') :
       segBtns([['z', 'Row z-score'], ['value', '% of signal'], ['log', '% (log)']].concat(refOpt, R ? [['dr', 'Difference', 'Each value minus the reference’s, in percentage points, on one scale for all species']] : []),
         hm.scaleS, function (v) { hm.scaleS = v; renderHeat(); }, 'Colour scale');
@@ -27088,7 +27289,8 @@ APP.views.compare = (function () {
       h('button', { class: 'btn sm', onclick: function () { saveHeat(runs, 'svg'); } }, UI.icon('download'), 'SVG'),
       h('button', { class: 'btn sm', onclick: function () { saveHeat(runs, 'png'); } }, UI.icon('download'), 'PNG'),
       h('button', { class: 'btn sm', title: 'The values behind the heat map, and the colour scores, as an Excel workbook', onclick: function () { UI.dl.saveTable(heatSheets(runs, Mo), 'MuroSense_heatmap_' + (isM ? 'metrics' : 'species')); } }, UI.icon('download'), 'Excel')));
-    card.appendChild(h('div', { class: 'filters' }, whatSeg, h('span', { class: 'row small muted', style: { gap: '6px' } }, 'Colour', scaleSeg),
+    card.appendChild(h('div', { class: 'filters' }, whatSeg, h('span', { class: 'row small muted', style: { gap: '6px' } }, 'Scale', scaleSeg),
+      h('label', { class: 'row small muted', style: { gap: '6px' } }, 'Colours', palSel), h('label', { class: 'check small', title: 'Swap the high and the low colours' }, revIn, ' reverse'),
       h('label', { class: 'check small' }, cr, ' cluster rows'), h('label', { class: 'check small' }, cc, ' cluster samples'), h('label', { class: 'check small' }, vv, ' values in cells'),
       h('span', { class: 'small muted' }, Mo.rows.length + ' of ' + Mo.all.length + ' ' + (isM ? 'metrics' : 'species'))));
     var fig = h('div', { class: 'heat-fig' });
@@ -27105,13 +27307,15 @@ APP.views.compare = (function () {
     card.appendChild(h('div', { class: 'card-b stack', style: { gap: '8px' } }, fig,
       h('p', { class: 'note' }, (isM ? 'Each metric is coloured across the samples on its own scale (a z-score, or 0 for its lowest and 1 for its highest value), as metrics differ in size; Total PG is the summed UV peak area of the identified muropeptides. Clustering groups samples, or metrics, with similar profiles (average linkage on the colours shown).' :
         'Species are matched by composition, as in the table above. A z-score shows how each species differs between the samples; % of signal shows how much there is. Grey cells: not found in that sample.') +
-        (R ? ' Against the reference (◆, ' + A.refLabel() + '): ratio colours each cell by log₂ of its value over the reference’s, red for more and blue for less, full at 4-fold' + (isM ? '' : '; a ring marks a species not in the reference (new) or found only in it (lost); difference colours by percentage points on one scale') + '.' :
+        (R ? ' Against the reference (◆, ' + A.refLabel() + '): ratio colours each cell by log₂ of its value over the reference’s, the high colour for more and the low colour for less (red and blue in Blue – red), full at 4-fold' + (isM ? '' : '; a ring marks a species not in the reference (new) or found only in it (lost); difference colours by percentage points on one scale') + '.' :
           ' Choose a reference sample (Samples, above) to colour every cell against it.'))));
   }
 
   function exportX(runs) {
     if (!runs.length) return;
-    UI.saveFile('murosense_comparison.xlsx', UI.files.xlsx(compareSheets(runs)));
+    function go() { return UI.saveFile(A.fileBase() + '_comparison.xlsx', UI.files.xlsx(compareSheets(runs))); }
+    if (A.sessionName) return go();
+    return A.nameSession('workbook').then(function (v) { return v === null ? false : go(); });
   }
   /* the workbook of the comparison: the samples (with their original
      names), the profile metrics and the species matrices */
@@ -29392,18 +29596,19 @@ APP.views.guide = (function () {
       li([
         [h('b', null, 'Samples, groups and the reference. '), h('i', null, 'Samples…'), ' lists every sample with its original (file) name, the name to use, and its group. Rows move by their handle or the arrows, or all at once by name (2 before 10), by group, in reverse or as added. ', h('i', null, 'Shorten names'), ' drops what all the file names share (a date, a project prefix). Samples in one group are replicates of a strain or condition. The ', h('i', null, 'Reference'), ' (here or above the chips) is one sample, or the mean of one group, that the others are compared with. With groups, ', h('i', null, 'Columns: Group means'), ' shows one column per group, the mean of its samples ± their standard deviation, in the tables, the charts, the heat map and Total PG; samples outside a group stay on their own. Names, groups, order and reference are saved with the session.'],
         [h('b', null, 'Quality checklist. '), 'One row per sample, to look at before drawing conclusions from it: mass accuracy after calibration, the share of the muropeptide-like signal explained, contaminants, species found and peak width (against the median sample), the UV signal-to-noise and how much of the UV the identified species explain, total PG (against the reference or the median), detector saturation, reduction, and the retention-time shift against the reference. A green dot is good, amber worth a look, red poor; hover a heading for its thresholds. The worst check gives the overall grade, and the score weighs good as 1 and check as ½. A sample’s name opens its Quality tab in Analyse, where the same checklist heads the evidence. Click a heading to sort on that check: worst first, again for best first, a third time for your order (sorting orders this table only). The tick box before each name leaves the sample out of every other section and the exports, as unticking its chip does; the sample stays in the checklist, dimmed, to tick again. The box in the heading ticks or unticks every sample listed (with ', h('i', null, 'To check'), ', every sample to check), so poor samples can be left out together.'],
-        [h('b', null, 'Stacked chromatograms. '), 'Each sample’s trace (UV, base peak or TIC) sits on its own y axis, relative to its tallest peak or, with one scale, to the tallest of all. Species found in every sample are named in black; with Show differences, species missing from some are named in red. ', h('i', null, 'Mark peaks'), ' draws a shaded band or a thin line down the stack where each named species elutes; ', h('i', null, 'Names'), ' puts the structures above the stack, over each sample’s own peaks, or nowhere. Many samples scroll in a window between the names and the time axis, which stay in place; ', h('i', null, 'Trace height'), ' sets how tall each trace is, and ', h('i', null, 'all at full length'), ' shows them all at once. Click a sample’s name to hide it from the figure (it stays in the tables); hidden samples are listed above the figure, each a click from coming back, with ', h('i', null, 'Unhide all'), '.'],
+        [h('b', null, 'Stacked chromatograms. '), 'Each sample’s trace (UV, base peak or TIC) sits on its own y axis, relative to its tallest peak or, with one scale, to the tallest of all. Species found in every sample are named in black; with Show differences, species missing from some are named in red. ', h('i', null, 'Mark peaks'), ' draws a shaded band or a thin line down the stack where each named species elutes; ', h('i', null, 'Colour by'), ' sets their colour: by presence (the default: grey in every sample, red missing from some), by oligomer (monomer, dimer, trimer, ≥ tetramer) or stem length (tri, tetra, penta, mixed), as in the profile metrics, or by one feature (anhydro ends, 4-3 or 3-3 cross-links, Lpp remnant, amidation, de-N-acetylation, O-acetylation, Gly at position 4 or 5, cross-bridge), coloured with it and grey without; a legend beside the caption names the colours, in saved figures too. ', h('i', null, 'Names'), ' puts the structures above the stack, over each sample’s own peaks, or nowhere. Many samples scroll in a window between the names and the time axis, which stay in place; ', h('i', null, 'Trace height'), ' sets how tall each trace is, and ', h('i', null, 'all at full length'), ' shows them all at once. Click a sample’s name to hide it from the figure (it stays in the tables); hidden samples are listed above the figure, each a click from coming back, with ', h('i', null, 'Unhide all'), '.'],
         [h('b', null, 'Retention times. '), 'Each sample elutes a little earlier or later. Peaks are matched across the samples by composition and retention time: rows of one composition within ± the matching window (0.3 min unless changed) are one species, so isomers that elute apart are named apart. Each sample keeps its own peak times: a band or line bends through each sample’s own peak (or where it would be, in a sample without it), names over the peaks sit on each sample’s own peaks, and names above the stack sit at the mean time. Matching first allows for each sample’s overall shift against the reference, the median shift of the big peaks (0.5% or more) they share; ', h('i', null, 'align times'), ' also moves each trace by it, so the same peaks line up, and writes the shift under each name. A sample sharing fewer than three big peaks with the reference (another organism, another gradient) is not moved.'],
         [h('b', null, 'Which species are named. '), 'The traces are the detector signal and always show every peak; ', h('i', null, 'Name species by'), ' sets which species get a name and a mark. ', h('i', null, 'Share cutoff'), ' names those reaching a share in at least one sample; ', h('i', null, 'Table filter'), ' names what the Species table further down shows with its search, class and mean filters; ', h('i', null, 'Ticked in table'), ' names only the species ticked there, the usual choice for a figure (an isomer under a quarter of its composition’s biggest peak is left unnamed). The figure follows the table as you change it. Click a name on the figure to hide it; ', h('i', null, 'Show hidden names'), ' brings them back.'],
         [h('b', null, 'Saving them. '), 'SVG and PNG save the figure as shown, with the samples shown. ', h('i', null, 'Download…'), ' saves it stacked or one figure per sample (several in a .zip), with the names as on screen, over the peaks, above, or none; a sample on its own is always drawn on its own clock, each name at its own peak. SVG is vector and opens in Illustrator or Inkscape; PNG is drawn at four times the size (a very tall stack at the largest size the browser allows) and marked for printing about 18 cm wide.'],
         [h('b', null, 'Total PG. '), 'How much peptidoglycan each sample gave, from the UV: the summed UV peak area of its identified muropeptides, in the absorbance units the file records, times minutes. At 205 nm the area follows the number of disaccharide-peptide units, so this is an amount of material, not a count of molecules, and it compares samples prepared and injected the same way. Beside it: the area of every UV peak in the muropeptide window, the share the identified species explain, and the percentage of the reference (or of the median sample without one). A sample below the threshold (50% unless changed) is flagged low. The chart shows the areas or the percentages, with the reference and the threshold as dashed lines; samples without UV show n/a.'],
         [h('b', null, 'Against the reference. '), 'With a reference chosen, the metric and species tables show each sample as its value, its difference from the reference (percentage points), or its ratio to it (1.00× is the same; for species, new where the reference lacks it, lost where only the reference has it). Cells are tinted red for more and blue for less, full at 4-fold, and the reference’s own values lead the table.'],
-        [h('b', null, 'Heat maps. '), 'The profile metrics (with total PG) or the species, one column per sample and one row per metric or species. ', h('i', null, 'Choose…'), ' picks the rows, and × beside a row removes it. Colours: a z-score per row (blue below the mean, red above), each row from its lowest to its highest value, for species the % of signal on a linear or log scale (one blue ramp, darker for more; grey: not found), and, with a reference, the ratio to the reference (log₂, red more, blue less, full at 4-fold; the reference column is marked ◆) or, for species, the difference in percentage points. A ring marks a species new against the reference or lost. Rows and samples can be clustered (average linkage, with dendrograms), and values written in the cells. SVG or PNG save it in the light theme.'],
+        [h('b', null, 'Heat maps. '), 'The profile metrics (with total PG) or the species, one column per sample and one row per metric or species. ', h('i', null, 'Choose…'), ' picks the rows, and × beside a row removes it. Colours: a z-score per row (blue below the mean, red above), each row from its lowest to its highest value, for species the % of signal on a linear or log scale (one blue ramp, darker for more; grey: not found), and, with a reference, the ratio to the reference (log₂, red more, blue less, full at 4-fold; the reference column is marked ◆) or, for species, the difference in percentage points. A ring marks a species new against the reference or lost. Rows and samples can be clustered (average linkage, with dendrograms), and values written in the cells. ', h('i', null, 'Colours'), ' changes the scheme: Blue – red (the default), Blue – orange (safe for colour-blind readers), Purple – green, Teal – brown, Viridis, Magma or Greys (for print); ', h('i', null, 'reverse'), ' swaps the high and the low colours. The colours named above are those of Blue – red. SVG or PNG save it in the light theme, in the scheme chosen.'],
         [h('b', null, 'Charts. '), 'At a glance and the species chart keep one group of bars per sample at a readable width; with many samples they scroll sideways and keep their value axis in view. Bar width widens them. With group means, whiskers show ± one standard deviation.'],
         [h('b', null, 'Tables and Excel. '), 'The metric and species tables are the exact values behind the charts and heat maps. Excel beside Samples saves the whole comparison in one workbook: the Samples sheet (original names, groups, the reference, total PG, quality), the quality checklist, total PG, the profile metrics, the group means with their SD, the metrics and species against the reference (difference and ratio), and the species matrices. Each section also saves on its own: Excel above a table saves that table as shown, and SVG or PNG above a chart that chart (see Saving).']])]));
 
     body.appendChild(sec('saving', 'Saving and the bundle', [
       p('Each run saves as an Excel workbook or a CSV of its species (Analyse), or as an analysis file that opens again with every result and evidence (Save analysis); ', h('i', null, 'Save session'), ' keeps all runs in one file, with their names, groups, order and the reference.'),
+      p(h('b', null, 'The session’s name and the folder. '), 'Saving a session or a bundle asks for the session’s name first (the last one given is filled in); the session file (name.murosense-session.json.gz), the bundle (name_bundle.zip), the comparison workbook (name_comparison.xlsx) and every table or figure saved from Compare (name_total_PG.xlsx and so on) carry it. The name shows on the Samples card in Compare, where a click changes it, and it is kept in the session file. In Chrome and Edge each save then opens the computer’s own save dialog to choose the folder (and change the name), starting in the folder used last; ', h('i', null, 'Ask where to save each file'), ' in the name dialog turns this off, to save straight into the download folder. Other browsers save into their download folder, or ask where when that is turned on in their settings.'),
       p(h('b', null, 'One table or figure. '), 'Every table and figure, in Analyse’s tabs, the evidence panel, Compare, Structure and Library, has small buttons above it: ', h('i', null, 'Excel'), ' saves that table as shown (as filtered and sorted; numbers stay numbers, with the decimals shown on screen, a unit shared by a column in its heading, a group’s spread in a column of its own), ', h('i', null, 'SVG'), ' saves that figure as a vector figure and ', h('i', null, 'PNG'), ' as a picture at three times its size, marked at least 300 dpi (a wide one prints about 18 cm wide). Figures are always saved in the light theme’s colours, with their legend, whatever the theme on screen. The file is named after the sample and the section, such as Vc_WT_1_quality_UV_trace.png. The species table of a run saves every column of the species shown, and the long structure lists of the Library their full list.'),
       p(h('b', null, 'The bundle. '), h('i', null, 'Save bundle'), ' packs everything in one compressed .zip, to archive with a project or send with a manuscript: a README; ', h('b', null, 'methods.txt'), ', a methods text for publication (a general paragraph, one per sample, and the references); ', h('b', null, 'parameters.json'), ' with every setting and the chemistry rules each run used; ', h('b', null, 'samples.csv'), ' with the names used, the original names, the groups, the reference and total PG; per sample the full workbook, the species, the MS/MS fragments matched to each species (', h('b', null, 'fragment_evidence.csv'), ': label, m/z, error, co-elution), the profile metrics, the unexplained features, its methods paragraph and its chromatogram with the species named at its own peaks; the comparison workbook, stacked chromatograms and heat maps; the chemistries searched with every monomer and dimer they generate, your libraries and every structure identified; and the session itself, so the .zip opens again in MuroSense.')]));
 
