@@ -3494,6 +3494,28 @@ SAC.library = (function () {
 
   var KIND = ['', 'monomer', 'dimer', 'trimer', 'tetramer', 'pentamer', 'hexamer', 'heptamer', 'octamer'];
   var STEM_WORD = ['', 'Mono', 'Di', 'Tri', 'Tetra', 'Penta', 'Hexa', 'Hepta'];
+  /* The residues of a stem, one code each, from its text ('AEJ(Am)A',
+     'AEKAALac', 'AE{Hsr}A'); D-Lac in place of D-Ala reads as Ala. */
+  function stemResidues(stem) {
+    return (String(stem || '').match(/Lac|\{[^}]*\}|[A-Z](?:\([^)]*\))?/g) || []).map(function (t) {
+      return t === 'Lac' ? 'A' : t.charAt(0) === '{' ? t.slice(1, -1) : t.charAt(0);
+    });
+  }
+  /* Residues that differ from the standard stem, the same for every
+     chemistry: L-Ala at 1, D-iGlu (or iGln) at 2, a diamino acid at 3
+     (mDAP, Lys, Orn), D-Ala at 4 and 5. Each: { pos, code, name, tag } with
+     tag as it goes into a short name (Met4, Leu/Ile4, Gly5). Leu and Ile
+     weigh the same, so a mass cannot tell them apart. */
+  function nonCanon(u) {
+    var out = [];
+    stemResidues(u && u.stem).forEach(function (c, i) {
+      var pos = i + 1, std = pos === 1 || pos >= 4 ? c === 'A' : pos === 2 ? c === 'E' || c === 'Q' : !!C.DIAMINO[c];
+      if (std || pos > 5) return;
+      var nm = c === 'L' || c === 'I' ? 'Leu/Ile' : C.AA[c] ? C.AA[c].n : c;
+      out.push({ pos: pos, code: c, name: nm, tag: nm + pos });
+    });
+    return out;
+  }
   function shortName(us) {
     return us.map(function (u) {
       /* a sugar-free peptide that does not start Ala-Glu (DAP-Ala, say) is
@@ -3508,7 +3530,9 @@ SAC.library = (function () {
       if (u.amid) m.push('Am');
       u.mods.forEach(function (x) { if (x === 'X' || x === 'Glyc' || x === 'Lactam') m.push(x); });
       if (u.lpp) m.push('Lpp-' + u.lpp);
-      if (u.stem && /G/.test(u.stem.slice(3))) m.push('Gly' + (u.stem.indexOf('G', 3) + 1));
+      /* residues other than the standard ones, by name and position
+         (Met4, Leu/Ile4, Gly5); a bare peptide already spells its residues */
+      if (!/^pep·[A-Z]/.test(s) || /^pep·(Mono|Di|Tri|Tetra|Penta)/.test(s)) nonCanon(u).forEach(function (x) { m.push(x.tag); });
       return s + (m.length ? '(' + m.join(',') + ')' : '');
     }).join('–');
   }
@@ -3807,7 +3831,7 @@ SAC.library = (function () {
 
   return { PROFILES: PROFILES, PROFILE_ORDER: PROFILE_ORDER, POOL_ORDER: POOL_ORDER, clone: clone, unitsOf: unitsOf, buildSpace: buildSpace,
            groupByFormula: groupByFormula, donorType: donorType, accepts: accepts, linkOf: linkOf, chainInfo: chainInfo,
-           makeEntry: makeEntry, shortName: shortName, oligoText: oligoText, extraEntry: extraEntry, KIND: KIND,
+           makeEntry: makeEntry, shortName: shortName, nonCanon: nonCanon, stemResidues: stemResidues, oligoText: oligoText, extraEntry: extraEntry, KIND: KIND,
            precursorStructures: precursorStructures, PREC_DEFAULT: PREC_DEFAULT, parseLink: parseLink, canon: canon };
 })();
 
@@ -7276,7 +7300,9 @@ SAC.metrics = (function () {
     var units = muro.map(function (r, i) { return mol[i] * Math.max(1, r.nStem); });
     var totU = units.reduce(function (s, v) { return s + v; }, 0);
     var m = { source: src, n: muro.length, byK: {}, byKUnits: {}, xlink: 0, xlinkG: 0, xlink43: 0, xlink33: 0, xlink13: 0, xlinkOther: 0, xlinkOpen: 0, mol13: 0, anhUnits: 0,
-              chainLength: null, tri: 0, tetra: 0, penta: 0, other: 0, bridged: 0, deac: 0, oac: 0, amid: 0, lpp: 0, gly: 0, stems: 0 };
+              chainLength: null, tri: 0, tetra: 0, penta: 0, other: 0, bridged: 0, deac: 0, oac: 0, amid: 0, lpp: 0, gly: 0, stems: 0,
+              ncaa: 0, ncaa4: 0, ncaa5: 0, ncaa13: 0, ncaaBy: {} };
+    var NC = SAC.library && SAC.library.nonCanon;
     muro.forEach(function (r, i) {
       var k = r.nStem, fm = mol[i] / totMol * 100, fu = units[i] / totU * 100;
       var key = k >= 4 ? '4+' : String(k);
@@ -7311,7 +7337,20 @@ SAC.metrics = (function () {
         if (u.oac) m.oac += w;
         if (u.amid) m.amid += w;
         if (u.lpp) m.lpp += w;
-        if (/G/.test((u.stem || '').slice(3))) m.gly += w;
+        /* residues other than the standard stem's: Gly at 4 or 5 on its own;
+           the others (non-canonical amino acids) together, by position and
+           by residue; a stem counts once in the total */
+        var nc = NC ? NC(u) : [];
+        if (nc.some(function (x) { return x.code === 'G' && x.pos >= 4; })) m.gly += w;
+        nc = nc.filter(function (x) { return x.code !== 'G'; });
+        if (nc.length) {
+          m.ncaa += w;
+          if (nc.some(function (x) { return x.pos === 4; })) m.ncaa4 += w;
+          if (nc.some(function (x) { return x.pos === 5; })) m.ncaa5 += w;
+          if (nc.some(function (x) { return x.pos <= 3; })) m.ncaa13 += w;
+          var seenN = {};
+          nc.forEach(function (x) { if (seenN[x.name]) return; seenN[x.name] = 1; m.ncaaBy[x.name] = (m.ncaaBy[x.name] || 0) + w; });
+        }
       });
     });
     m.chainLength = m.anhUnits > 0 ? 100 / m.anhUnits : null;
@@ -22539,7 +22578,7 @@ var APP = (function () {
   var LABELS = { home: 'Home', analyse: 'Analyse', compare: 'Compare', structure: 'Structure', library: 'Library', guide: 'Guide' };
   var DEFAULT_SETTINGS = { profile: 'auto', reduction: 'auto', fdr: 0.01, maxOligomer: '', tol: 'auto', ms2: true, uv: true, rt0: '', rt1: '', focused: true, refs: true,
                            autoLibs: false, polarity: 'auto' };
-  var NAME = 'MuroSense', VERSION = '3.19';
+  var NAME = 'MuroSense', VERSION = '3.20';
 
   var A = {
     NAME: NAME, VERSION: VERSION, runs: [], current: null, view: 'home', views: {},
@@ -22833,12 +22872,27 @@ var APP = (function () {
   A.libraryEdits = libraryEdits;
 
   /* derived look-ups the views share */
+  /* a short name ('Tetra–Tetra(Anh)') with the tags of residues other than
+     the standard ones added to each stem's part, where missing */
+  function retag(short, U) {
+    if (!short || !U || !U.length) return short;
+    var segs = String(short).split('–');
+    if (segs.length !== U.length) return short;
+    return segs.map(function (sg, i) {
+      var tags = SAC.library.nonCanon(U[i]).map(function (x) { return x.tag; }).filter(function (t) { return sg.indexOf(t) < 0; });
+      if (!tags.length || /^pep·[A-Z][a-z]+-/.test(sg)) return sg;
+      var mm = /^(.*)\(([^()]*)\)$/.exec(sg);
+      return mm ? mm[1] + '(' + mm[2] + ',' + tags.join(',') + ')' : sg + '(' + tags.join(',') + ')';
+    }).join('–');
+  }
   function prepare(res) {
     if (res.customBlocks && (res.customBlocks.mods || []).concat(res.customBlocks.residues || []).length) syncCustom(res.customBlocks);
     res.rows.forEach(function (r, i) { r.idx = i; });
     /* results saved before the metrics knew every link type (1-3 and others)
        get them recomputed from their own species */
-    if (res.metrics && (res.metrics.xlink13 === undefined || res.metrics.xlinkG === undefined || !res.metricsRev) && SAC.metrics) {
+    /* names saved before they carried non-canonical residues (Met4, Leu/Ile4) get them */
+    if (SAC.library && SAC.library.nonCanon) res.rows.forEach(function (r) { r.short = retag(r.short, r.unitInfo); });
+    if (res.metrics && (res.metrics.xlink13 === undefined || res.metrics.xlinkG === undefined || res.metrics.ncaaBy === undefined || !res.metricsRev) && SAC.metrics) {
       try {
         /* and results saved before an MS/MS isomer call carried the called
            structure's class and links (a glycan-chain dimer was counted as a
@@ -23977,6 +24031,7 @@ APP.tabs = (function () {
   var h = UI.h;
 
   /* ---------------- profile ---------------- */
+  var NCAA_LISTED = ['Met', 'Leu/Ile', 'Phe', 'Tyr', 'Trp', 'Arg', 'Lys', 'His', 'Ser', 'Thr', 'Val', 'Asn', 'Asp'];
   var METRICS = [
     ['Oligomers, % of muropeptides (molar)', null],
     ['Monomers', function (m) { return m.byK['1']; }],
@@ -24010,7 +24065,29 @@ APP.tabs = (function () {
     ['O-acetylated MurNAc', function (m) { return m.oac; }],
     ['Amidated residues', function (m) { return m.amid; }],
     ['Lipoprotein (Lpp) remnant', function (m) { return m.lpp; }],
-    ['Gly at position 4 or 5', function (m) { return m.gly; }]
+    ['Gly at position 4 or 5', function (m) { return m.gly; }],
+    /* residues other than the standard stem's (L-Ala1, D-iGlu2, a diamino
+       acid at 3, D-Ala4, D-Ala5), Gly aside; rows that are zero everywhere
+       are not shown */
+    ['Non-canonical amino acids, % of units', null],
+    ['Stems with a non-canonical amino acid', function (m) { return m.ncaa; }, 'a residue other than L-Ala1, D-iGlu2, a diamino acid at 3, D-Ala4 or D-Ala5; Gly is counted on its own'],
+    ['at position 4', function (m) { return m.ncaa4; }, 'in V. cholerae exchanged in the periplasm by L,D-transpeptidases'],
+    ['at position 5', function (m) { return m.ncaa5; }, 'in V. cholerae built into the precursors in the cytoplasm (Ddl, MurF)'],
+    ['at positions 1 to 3', function (m) { return m.ncaa13; }],
+    ['with Met', function (m) { return (m.ncaaBy || {}).Met || 0; }],
+    ['with Leu/Ile', function (m) { return (m.ncaaBy || {})['Leu/Ile'] || 0; }, 'Leu and Ile weigh the same'],
+    ['with Phe', function (m) { return (m.ncaaBy || {}).Phe || 0; }],
+    ['with Tyr', function (m) { return (m.ncaaBy || {}).Tyr || 0; }],
+    ['with Trp', function (m) { return (m.ncaaBy || {}).Trp || 0; }],
+    ['with Arg', function (m) { return (m.ncaaBy || {}).Arg || 0; }],
+    ['with Lys', function (m) { return (m.ncaaBy || {}).Lys || 0; }],
+    ['with His', function (m) { return (m.ncaaBy || {}).His || 0; }],
+    ['with Ser', function (m) { return (m.ncaaBy || {}).Ser || 0; }],
+    ['with Thr', function (m) { return (m.ncaaBy || {}).Thr || 0; }],
+    ['with Val', function (m) { return (m.ncaaBy || {}).Val || 0; }],
+    ['with Asn', function (m) { return (m.ncaaBy || {}).Asn || 0; }],
+    ['with Asp', function (m) { return (m.ncaaBy || {}).Asp || 0; }],
+    ['with other residues', function (m) { var o = 0, B = m.ncaaBy || {}; Object.keys(B).forEach(function (k) { if (NCAA_LISTED.indexOf(k) < 0) o += B[k]; }); return o; }]
   ];
   /* the precursor pool, for a library that searched precursors */
   function precursorTable(R) {
@@ -24028,11 +24105,13 @@ APP.tabs = (function () {
     var R = run.result, ms = R.metrics, uv = R.metricsUV;
     if (!ms) return R.precursors ? h('div', { class: 'card-b' }, precursorTable(R)) :
       h('div', { class: 'empty' }, 'No muropeptides were identified, so no profile can be computed.');
-    var rows = [];
+    var rows = [], pend = null;
     METRICS.forEach(function (m) {
-      if (!m[1]) { rows.push(h('tr', null, h('td', { colspan: 3, class: 'eyebrow', style: { 'padding-top': '14px' } }, m[0]))); return; }
+      /* a section's heading shows only above rows that show */
+      if (!m[1]) { pend = h('tr', null, h('td', { colspan: 3, class: 'eyebrow', style: { 'padding-top': '14px' } }, m[0])); return; }
       var a = m[1](ms), b = uv ? m[1](uv) : null;
       if (!(a > 0.005) && !(b > 0.005) && m[3] !== 'len' && !/Monomers|Dimers|Trimers|Tetramers|Degree/.test(m[0])) return;
+      if (pend) { rows.push(pend); pend = null; }
       var f = function (v) { return v === null || v === undefined ? '–' : (m[3] === 'len' ? UI.fx(v, 0) : UI.pct(v, 1)); };
       rows.push(h('tr', null, h('td', null, m[0], m[2] ? h('small', null, m[2]) : null), h('td', { class: 'num' }, f(a)), uv ? h('td', { class: 'num' }, f(b)) : null));
     });
@@ -25529,17 +25608,20 @@ APP.views.compare = (function () {
      run where metrics are read (its result holds the means of its samples'
      metrics) and keeps its members for the spread. */
   function hasGroups(runs) { return (runs || chosen()).some(function (r) { return r.group; }); }
-  function avgObj(list) {
+  /* the mean of the samples' metrics; in a nested share (residues found,
+     oligomer classes) a sample without a key counts as 0 */
+  function avgObj(list, nested) {
     list = list.filter(function (x) { return x && typeof x === 'object'; });
     if (!list.length) return null;
-    var out = {};
-    Object.keys(list[0]).forEach(function (k) {
-      var v0 = list[0][k];
-      if (typeof v0 === 'number') {
+    var out = {}, keys = [];
+    list.forEach(function (o) { Object.keys(o).forEach(function (k) { if (keys.indexOf(k) < 0) keys.push(k); }); });
+    keys.forEach(function (k) {
+      var v0; list.some(function (o) { v0 = o[k]; return v0 !== undefined && v0 !== null; });
+      if (typeof v0 === 'number' || (nested && v0 === undefined)) {
         var s = 0, n = 0;
-        list.forEach(function (o) { if (typeof o[k] === 'number' && isFinite(o[k])) { s += o[k]; n++; } });
+        list.forEach(function (o) { var v = o[k]; if (nested && v === undefined) v = 0; if (typeof v === 'number' && isFinite(v)) { s += v; n++; } });
         out[k] = n ? s / n : null;
-      } else if (v0 && typeof v0 === 'object' && !Array.isArray(v0)) out[k] = avgObj(list.map(function (o) { return o[k]; }));
+      } else if (v0 && typeof v0 === 'object' && !Array.isArray(v0)) out[k] = avgObj(list.map(function (o) { return o[k] || {}; }), true);
       else out[k] = v0;
     });
     return out;
@@ -25875,7 +25957,7 @@ APP.views.compare = (function () {
   var SHADES = [['presence', 'Presence (default): grey in every sample, red missing from some'], ['oligo', 'Oligomer: monomer, dimer, trimer, ≥ tetramer'],
     ['stem', 'Stem length: tri, tetra, penta'], ['anh', 'Feature: anhydro chain ends'], ['x43', 'Feature: 4-3 cross-link'], ['x33', 'Feature: 3-3 cross-link'],
     ['lpp', 'Feature: Lpp remnant'], ['amid', 'Feature: amidation'], ['deac', 'Feature: de-N-acetylation'], ['oac', 'Feature: O-acetylation'],
-    ['gly', 'Feature: Gly at position 4 or 5'], ['bridge', 'Feature: cross-bridge']];
+    ['gly', 'Feature: Gly at position 4 or 5'], ['ncaa', 'Feature: non-canonical amino acid (not Gly)'], ['bridge', 'Feature: cross-bridge']];
   function isMuro(r) { return r && r.k >= 1 && r.nStem >= 1 && ['chain', 'precursor', 'recycling', 'peptide-only'].indexOf(r.cls) < 0; }
   /* a species' class under a colouring: { key, label, color (a CSS variable) } */
   function shadeClass(r, mode) {
@@ -25889,7 +25971,8 @@ APP.views.compare = (function () {
       return { key: '6', label: 'Mixed or other stems', color: '--uv' };
     }
     var has = mode === 'anh' ? r.nAnh > 0 : mode === 'x43' ? (r.links || []).indexOf('4-3') >= 0 : mode === 'x33' ? (r.links || []).indexOf('3-3') >= 0 :
-      mode === 'gly' ? U.some(function (u) { return /G/.test((u.stem || '').slice(3)); }) : mode === 'bridge' ? U.some(function (u) { return !!u.bridge; }) :
+      mode === 'gly' ? U.some(function (u) { return SAC.library.nonCanon(u).some(function (x) { return x.code === 'G' && x.pos >= 4; }); }) :
+      mode === 'ncaa' ? U.some(function (u) { return SAC.library.nonCanon(u).some(function (x) { return x.code !== 'G'; }); }) : mode === 'bridge' ? U.some(function (u) { return !!u.bridge; }) :
       U.some(function (u) { return !!u[mode]; });
     var nm = (SHADES.filter(function (x) { return x[0] === mode; })[0] || ['', ''])[1].replace(/^Feature: /, '');
     return has ? { key: 'a', label: 'With ' + nm, color: '--accent' } : { key: 'b', label: 'Without', color: '--faint' };
@@ -26639,11 +26722,13 @@ APP.views.compare = (function () {
           title: c.name + (c.isGroup ? ': ' + c.members.map(function (r) { return r.name; }).join(', ') : '') + (isRefCol(c) ? ' · the reference' : '') },
           h('label', { class: 'colpick' }, cb, h('i', { style: { background: colorOf[c.id] } }), short(c.name)));
       }));
-    var body = h('tbody');
+    var body = h('tbody'), pend = null;
     APP.tabs.METRICS.forEach(function (m, mi) {
-      if (!m[1]) { body.appendChild(h('tr', { class: 'sect' }, h('td', { class: 'stick eyebrow' }, m[0]), h('td', { colspan: cs.length + (rel !== 'value' ? 1 : 0) }))); return; }
+      /* a section's heading shows only above rows that show */
+      if (!m[1]) { pend = h('tr', { class: 'sect' }, h('td', { class: 'stick eyebrow' }, m[0]), h('td', { colspan: cs.length + (rel !== 'value' ? 1 : 0) })); return; }
       var vals = cs.map(function (c) { return metVal(m, c); });
       if (!vals.some(function (v) { return v > 0.005; }) && !/Monomers|Dimers|Trimers|Degree/.test(m[0])) return;
+      if (pend) { body.appendChild(pend); pend = null; }
       var tick = h('input', { type: 'checkbox', checked: !!st.metricSel[mi], title: 'Plot this metric',
         onchange: function () { st.metricSel[mi] = tick.checked; if (tick.checked) st.view = 'metrics'; renderChart(); } });
       var sorted = st.colSort && st.colSort.m === mi;
@@ -26945,7 +27030,7 @@ APP.views.compare = (function () {
       : function (u) { return ramp(seq, (Math.max(-1, Math.min(1, u)) + 1) / 2); };
     return { seq: seq, div: div || [seq[0], seq[Math.floor(seq.length / 2)], seq[seq.length - 1]], divCol: divCol };
   }
-  var SECT_SHORT = { 'Oligomers, % of disaccharide-peptide units': 'Units', 'Cross-linking': 'Cross-linkage' };
+  var SECT_SHORT = { 'Oligomers, % of disaccharide-peptide units': 'Units', 'Cross-linking': 'Cross-linkage', 'Non-canonical amino acids, % of units': 'NCAA' };
   function hex2rgb(x) { return [parseInt(x.slice(1, 3), 16), parseInt(x.slice(3, 5), 16), parseInt(x.slice(5, 7), 16)]; }
   function rgb2hex(c) { return '#' + c.map(function (v) { var t = Math.max(0, Math.min(255, Math.round(v))).toString(16); return t.length < 2 ? '0' + t : t; }).join(''); }
   /* sRGB <-> OKLab, so ramps are interpolated evenly for the eye */
@@ -29566,7 +29651,7 @@ APP.views.guide = (function () {
       li([
         [h('b', null, 'Species'), ': one row per identified feature. Isomers that elute apart are separate rows with the same name; the Compare view sums them. ',
           'Above the table, ', h('i', null, 'MS % ≥'), ' and ', h('i', null, 'UV % ≥'), ' hide species below that share of the identified signal (a species without UV counts as 0); the cut-offs are remembered in this browser for every run, and Excel and CSV exports still hold every species.'],
-        [h('b', null, 'Structure'), ': a short name (Tetra–Penta[AA] is a tetrapeptide cross-linked to a pentapeptide carrying an Ala-Ala bridge) above the full PGLang name. When several arrangements share the formula, the one shown first is the simplest, unless MS/MS chose another.'],
+        [h('b', null, 'Structure'), ': a short name (Tetra–Penta[AA] is a tetrapeptide cross-linked to a pentapeptide carrying an Ala-Ala bridge; Tetra(Met4) carries Met in place of D-Ala at position 4) above the full PGLang name. When several arrangements share the formula, the one shown first is the simplest, unless MS/MS chose another.'],
         [h('b', null, 'Mass · Δppm'), ': the calibrated neutral monoisotopic mass and its error from the formula.'],
         [h('b', null, 'MS %'), ' and ', h('b', null, 'UV %'), ': shares of the identified signal.'],
         [h('b', null, 'Evidence'), ': the q-value (the lowest FDR at which the species is kept), two dots for the muropeptide signature (GlcNAc loss, GlcNAc oxonium ion co-eluting in the high-energy channel), and the MS/MS count: predicted fragments found out of those tested, with the chance probability.'],
@@ -29588,7 +29673,8 @@ APP.views.guide = (function () {
       p('MS areas add up every charge state and adduct of a species. They are fast and sensitive, but they inherit differences in ionisation: large oligomers and hydrophobic species may ionise differently from small ones.'),
       p('UV absorbance at 205 nm comes from peptide bonds and N-acetyl groups and scales with the number of disaccharide-peptide units, which is why it is the classical basis of muropeptide quantification (Glauner, 1988). When species co-elute, a UV peak holds several of them. MuroSense does not split peaks by area ratios; it fits the UV trace as the sum of each species’ own MS elution profile, plus a smooth background for the unresolved hump. Every species gets the UV area its profile accounts for, and features not identified take their own share instead of inflating a neighbour.'),
       p('Two guards keep the split honest. The injection peak at the start of the run is left out of the muropeptide window when it towers over everything after it. And no species may take more than five times the UV its MS signal predicts, scaled on the run’s own UV-to-MS ratio, so a trace species eluting under a large peak cannot take that peak over; a species held at this limit is marked capped in its evidence.'),
-      p('The profile metrics follow Glauner: oligomer percentages are molar (UV areas are divided by the number of stems), cross-linkage is the number of peptide cross-links per stem (equal to ½ dimers + ⅔ trimers + ¾ tetramers applied to the % of units), and is also given as that formula applied to the molar % of muropeptides, as some studies apply it to their abundance tables, so a value can be set beside theirs; chain length is the number of disaccharide units per 1,6-anhydro end. Where MS and UV agree, the profile does not depend on ionisation.')]));
+      p('The profile metrics follow Glauner: oligomer percentages are molar (UV areas are divided by the number of stems), cross-linkage is the number of peptide cross-links per stem (equal to ½ dimers + ⅔ trimers + ¾ tetramers applied to the % of units), and is also given as that formula applied to the molar % of muropeptides, as some studies apply it to their abundance tables, so a value can be set beside theirs; chain length is the number of disaccharide units per 1,6-anhydro end. Where MS and UV agree, the profile does not depend on ionisation.'),
+      p(h('b', null, 'Non-canonical amino acids. '), 'A residue other than the standard stem’s (L-Ala at 1, D-iGlu or iGln at 2, a diamino acid such as mDAP, Lys or Orn at 3, D-Ala at 4 and 5; D-Lac at 5 counts as standard) is named in the short name by residue and position: Tetra(Met4), Penta(Leu/Ile5), Tetra–Tetra(Phe4), Tetra(Anh,Arg4). Leu and Ile have the same mass, so they are written Leu/Ile. Residues at 4 and 5 are D in these chemistries, so the D- is left out. The same rule holds for every chemistry, and analyses saved before get the new names when they open. ', h('i', null, 'Non-canonical amino acids, % of units'), ' in the profile metrics gives the share of stems carrying one (a stem counts once), at position 4, at 5 and at 1 to 3, and each residue on its own. Gly is not counted there; it keeps its own row (Gly at position 4 or 5). Rows that are zero in every sample are not shown. Which position an isomer’s residue sits at (Penta(Lys5) or Penta(Lys4), the same composition) is the arrangement the identification gives, settled by MS/MS when it can be. A residue the chemistry does not search for is not identified, so it is not counted; it shows under Unexplained, where the open search reports it as a mass shift.')]));
 
     body.appendChild(sec('compare', 'Comparing samples', [
       p('Compare takes the runs ticked under Samples. Every section and export follows one order, yours: drag a sample’s chip to move it, or open ', h('i', null, 'Samples…'), '. Clicking a metric in the metric table orders the samples by it for a while; ', h('i', null, 'Back to your order'), ' returns to yours.'),
@@ -29596,7 +29682,7 @@ APP.views.guide = (function () {
       li([
         [h('b', null, 'Samples, groups and the reference. '), h('i', null, 'Samples…'), ' lists every sample with its original (file) name, the name to use, and its group. Rows move by their handle or the arrows, or all at once by name (2 before 10), by group, in reverse or as added. ', h('i', null, 'Shorten names'), ' drops what all the file names share (a date, a project prefix). Samples in one group are replicates of a strain or condition. The ', h('i', null, 'Reference'), ' (here or above the chips) is one sample, or the mean of one group, that the others are compared with. With groups, ', h('i', null, 'Columns: Group means'), ' shows one column per group, the mean of its samples ± their standard deviation, in the tables, the charts, the heat map and Total PG; samples outside a group stay on their own. Names, groups, order and reference are saved with the session.'],
         [h('b', null, 'Quality checklist. '), 'One row per sample, to look at before drawing conclusions from it: mass accuracy after calibration, the share of the muropeptide-like signal explained, contaminants, species found and peak width (against the median sample), the UV signal-to-noise and how much of the UV the identified species explain, total PG (against the reference or the median), detector saturation, reduction, and the retention-time shift against the reference. A green dot is good, amber worth a look, red poor; hover a heading for its thresholds. The worst check gives the overall grade, and the score weighs good as 1 and check as ½. A sample’s name opens its Quality tab in Analyse, where the same checklist heads the evidence. Click a heading to sort on that check: worst first, again for best first, a third time for your order (sorting orders this table only). The tick box before each name leaves the sample out of every other section and the exports, as unticking its chip does; the sample stays in the checklist, dimmed, to tick again. The box in the heading ticks or unticks every sample listed (with ', h('i', null, 'To check'), ', every sample to check), so poor samples can be left out together.'],
-        [h('b', null, 'Stacked chromatograms. '), 'Each sample’s trace (UV, base peak or TIC) sits on its own y axis, relative to its tallest peak or, with one scale, to the tallest of all. Species found in every sample are named in black; with Show differences, species missing from some are named in red. ', h('i', null, 'Mark peaks'), ' draws a shaded band or a thin line down the stack where each named species elutes; ', h('i', null, 'Colour by'), ' sets their colour: by presence (the default: grey in every sample, red missing from some), by oligomer (monomer, dimer, trimer, ≥ tetramer) or stem length (tri, tetra, penta, mixed), as in the profile metrics, or by one feature (anhydro ends, 4-3 or 3-3 cross-links, Lpp remnant, amidation, de-N-acetylation, O-acetylation, Gly at position 4 or 5, cross-bridge), coloured with it and grey without; a legend beside the caption names the colours, in saved figures too. ', h('i', null, 'Names'), ' puts the structures above the stack, over each sample’s own peaks, or nowhere. Many samples scroll in a window between the names and the time axis, which stay in place; ', h('i', null, 'Trace height'), ' sets how tall each trace is, and ', h('i', null, 'all at full length'), ' shows them all at once. Click a sample’s name to hide it from the figure (it stays in the tables); hidden samples are listed above the figure, each a click from coming back, with ', h('i', null, 'Unhide all'), '.'],
+        [h('b', null, 'Stacked chromatograms. '), 'Each sample’s trace (UV, base peak or TIC) sits on its own y axis, relative to its tallest peak or, with one scale, to the tallest of all. Species found in every sample are named in black; with Show differences, species missing from some are named in red. ', h('i', null, 'Mark peaks'), ' draws a shaded band or a thin line down the stack where each named species elutes; ', h('i', null, 'Colour by'), ' sets their colour: by presence (the default: grey in every sample, red missing from some), by oligomer (monomer, dimer, trimer, ≥ tetramer) or stem length (tri, tetra, penta, mixed), as in the profile metrics, or by one feature (anhydro ends, 4-3 or 3-3 cross-links, Lpp remnant, amidation, de-N-acetylation, O-acetylation, Gly at position 4 or 5, a non-canonical amino acid, cross-bridge), coloured with it and grey without; a legend beside the caption names the colours, in saved figures too. ', h('i', null, 'Names'), ' puts the structures above the stack, over each sample’s own peaks, or nowhere. Many samples scroll in a window between the names and the time axis, which stay in place; ', h('i', null, 'Trace height'), ' sets how tall each trace is, and ', h('i', null, 'all at full length'), ' shows them all at once. Click a sample’s name to hide it from the figure (it stays in the tables); hidden samples are listed above the figure, each a click from coming back, with ', h('i', null, 'Unhide all'), '.'],
         [h('b', null, 'Retention times. '), 'Each sample elutes a little earlier or later. Peaks are matched across the samples by composition and retention time: rows of one composition within ± the matching window (0.3 min unless changed) are one species, so isomers that elute apart are named apart. Each sample keeps its own peak times: a band or line bends through each sample’s own peak (or where it would be, in a sample without it), names over the peaks sit on each sample’s own peaks, and names above the stack sit at the mean time. Matching first allows for each sample’s overall shift against the reference, the median shift of the big peaks (0.5% or more) they share; ', h('i', null, 'align times'), ' also moves each trace by it, so the same peaks line up, and writes the shift under each name. A sample sharing fewer than three big peaks with the reference (another organism, another gradient) is not moved.'],
         [h('b', null, 'Which species are named. '), 'The traces are the detector signal and always show every peak; ', h('i', null, 'Name species by'), ' sets which species get a name and a mark. ', h('i', null, 'Share cutoff'), ' names those reaching a share in at least one sample; ', h('i', null, 'Table filter'), ' names what the Species table further down shows with its search, class and mean filters; ', h('i', null, 'Ticked in table'), ' names only the species ticked there, the usual choice for a figure (an isomer under a quarter of its composition’s biggest peak is left unnamed). The figure follows the table as you change it. Click a name on the figure to hide it; ', h('i', null, 'Show hidden names'), ' brings them back.'],
         [h('b', null, 'Saving them. '), 'SVG and PNG save the figure as shown, with the samples shown. ', h('i', null, 'Download…'), ' saves it stacked or one figure per sample (several in a .zip), with the names as on screen, over the peaks, above, or none; a sample on its own is always drawn on its own clock, each name at its own peak. SVG is vector and opens in Illustrator or Inkscape; PNG is drawn at four times the size (a very tall stack at the largest size the browser allows) and marked for printing about 18 cm wide.'],
