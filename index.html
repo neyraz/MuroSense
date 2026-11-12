@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%2040%2032%22%3E%3Cpath%20d%3D%22M2.6%2028.4h6.2c2%200%202.8-1.4%203.7-5.7L15%2012.3l2.5%2010c.6%202.7%201.4%203.7%202.9%203.7s2.3-1%202.9-3.7l2.5-10%202.5%2010.4c.9%204.3%201.7%205.7%203.7%205.7h6.4%22%20fill%3D%22none%22%20stroke%3D%22%230b6870%22%20stroke-width%3D%222.9%22%20stroke-linecap%3D%22round%22%20stroke-linejoin%3D%22round%22%2F%3E%3Crect%20x%3D%229.2%22%20y%3D%223%22%20width%3D%226.8%22%20height%3D%226.8%22%20rx%3D%221%22%20fill%3D%22%231c62c4%22%2F%3E%3Cpolygon%20points%3D%2227.21%2C8.60%2023.40%2C10.80%2019.59%2C8.60%2019.59%2C4.20%2023.40%2C2.00%2027.21%2C4.20%22%20fill%3D%22%238a3591%22%2F%3E%3C%2Fsvg%3E">
 <title>MuroSense</title>
+<meta name="theme-color" content="#ffffff">
 <meta name="claude:viewport-fit-sides" content="cover">
 <meta name="description" content="Peptidoglycan muropeptide LC-MS analysis in the browser: identification with a controlled false discovery rate, MS/MS and UV evidence, and profile metrics.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -20835,7 +20836,7 @@ var UI = (function () {
   function canPick() { return typeof window.showSaveFilePicker === 'function' && !inViewer() && store.get('askWhere', true) !== false; }
   function pickSave(name, mime) {
     if (!canPick()) return Promise.resolve(null);
-    var m = /(\.[A-Za-z0-9]{1,8})$/.exec(name), acc = {};
+    var m = /(\.[A-Za-z0-9]{1,12})$/.exec(name), acc = {};
     if (m) acc[mime || 'application/octet-stream'] = [m[1].toLowerCase()];
     function ask(typed) {
       var o = { suggestedName: name, id: 'murosense' };
@@ -22610,7 +22611,7 @@ var APP = (function () {
   var LABELS = { home: 'Home', analyse: 'Analyse', compare: 'Compare', structure: 'Structure', library: 'Library', guide: 'Guide' };
   var DEFAULT_SETTINGS = { profile: 'auto', reduction: 'auto', fdr: 0.01, maxOligomer: '', tol: 'auto', ms2: true, uv: true, rt0: '', rt1: '', focused: true, refs: true,
                            autoLibs: false, polarity: 'auto' };
-  var NAME = 'MuroSense', VERSION = '3.24';
+  var NAME = 'MuroSense', VERSION = '3.25';
 
   var A = {
     NAME: NAME, VERSION: VERSION, runs: [], current: null, view: 'home', views: {},
@@ -22742,7 +22743,7 @@ var APP = (function () {
   function addFiles(files) {
     var added = 0;
     Array.prototype.forEach.call(files, function (f) {
-      if (/\.(json|gz|zip)$/i.test(f.name)) { openAnalysis(f); return; }
+      if (/\.(json|gz|zip|murosense)$/i.test(f.name)) { openAnalysis(f); return; }
       if (!/\.mzml$/i.test(f.name)) { UI.toast(f.name + ' is not an .mzML file'); return; }
       var nm = f.name.replace(/\.mzml$/i, '');
       var run = { id: 'r' + (++seq), name: nm, origName: nm, size: f.size, file: f, status: 'queued', source: 'file',
@@ -23009,17 +23010,20 @@ var APP = (function () {
     var gz = typeof CompressionStream === 'function';
     return A.nameSession('session').then(function (nm) {
       if (nm === null) return false;
-      var name = fileSafe(nm) + '.murosense-session.json' + (gz ? '.gz' : '');
+      /* name.murosense: a session's own file type (gzip-compressed JSON), so
+         the installed app opens it with a double-click; files read by their
+         contents, so older .murosense-session.json.gz files open as before */
+      var name = fileSafe(nm) + '.murosense', MT = 'application/x-murosense';
       /* the folder is asked first, while the click is fresh; then the file is made */
-      return UI.pickSave(name, gz ? 'application/gzip' : 'application/json').then(function (target) {
+      return UI.pickSave(name, MT).then(function (target) {
         if (target === 'cancel') return false;
         var blob = new Blob(sessionParts(runs), { type: 'application/json' });
         if (gz) {
           return new Response(blob.stream().pipeThrough(new CompressionStream('gzip'))).blob()
-            .then(function (z) { return UI.saveFile(name, z, 'application/gzip', target); })
-            .catch(function () { return UI.saveFile(name.replace(/\.gz$/, ''), blob, 'application/json', target && target.createWritable ? target : null); });
+            .then(function (z) { return UI.saveFile(name, new Blob([z], { type: MT }), MT, target); })
+            .catch(function () { return UI.saveFile(name, blob, MT, target && target.createWritable ? target : null); });
         }
-        return UI.saveFile(name, blob, 'application/json', target);
+        return UI.saveFile(name, blob, MT, target);
       });
     });
   }
@@ -23243,8 +23247,15 @@ var APP = (function () {
     else root.setAttribute('data-theme', t);
     UI.store.set('theme', t);
     syncThemeButton();
+    titleBar();
     A.emit('theme');
   }
+  /* the installed app's title bar takes the colour of the header */
+  function titleBar() {
+    var m = document.querySelector('meta[name="theme-color"]'), c = UI.css('--panel');
+    if (m && c) m.setAttribute('content', c);
+  }
+  try { window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', function () { setTimeout(titleBar, 0); }); } catch (e) { /* older browsers */ }
   /* the theme on screen now, whatever chose it */
   function shownTheme() {
     var a = document.documentElement.getAttribute('data-theme');
@@ -23325,6 +23336,35 @@ var APP = (function () {
     applyTheme(A.theme);
     var hv = (location.hash || '').replace('#', '');
     show(VIEWS.indexOf(hv) >= 0 && hv !== 'analyse' && hv !== 'compare' ? hv : 'home');
+    appInstall();
+  }
+  /* Installed as an app. Served from a web address (GitHub Pages, say) with
+     manifest.webmanifest and sw.js beside it, the page names its manifest
+     and starts its service worker, so Edge or Chrome can install it and it
+     opens offline. In the installed app, a session double-clicked on the
+     computer (.murosense) arrives through the launch queue and opens as if
+     dropped on the page. Opened as a file, or inside another page, none of
+     this applies. */
+  function appInstall() {
+    var top = true;
+    try { top = window.self === window.top; } catch (e) { top = false; }
+    if (top && /^https?:$/.test(location.protocol) && !(window.claude && typeof window.claude.use === 'function') && typeof fetch === 'function') {
+      var go = function () {
+        if (!document.querySelector('link[rel="manifest"]')) document.head.appendChild(h('link', { rel: 'manifest', href: 'manifest.webmanifest' }));
+        if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(function () { /* no worker beside the page: no offline use */ });
+      };
+      /* offline, the installed app runs from its service worker's copy */
+      if (navigator.onLine === false) { if (navigator.serviceWorker && navigator.serviceWorker.controller) go(); }
+      else fetch('manifest.webmanifest', { method: 'HEAD', cache: 'no-cache' }).then(function (r) { if (r.ok) go(); }, function () { /* no manifest beside the page: an ordinary page */ });
+    }
+    if (window.launchQueue && typeof window.launchQueue.setConsumer === 'function') {
+      window.launchQueue.setConsumer(function (params) {
+        var fs = params && params.files ? [].slice.call(params.files) : [];
+        if (!fs.length) return;
+        Promise.all(fs.map(function (f) { return f.getFile(); }))
+          .then(function (files) { addFiles(files); }, function (e) { UI.toast('Could not open the file: ' + ((e && e.message) || e)); });
+      });
+    }
   }
 
   A.addFiles = addFiles; A.reanalyse = reanalyse; A.reanalyseAll = reanalyseAll; A.isBusy = function (r) { return busy === r; }; A.remove = remove; A.byId = byId; A.query = query; A.settingsChanged = settingsChanged;
@@ -23454,7 +23494,7 @@ APP.views.analyse = (function () {
     /* a run finishing re-renders the panel: keep the place the list was scrolled to */
     var oldBody = rail.querySelector('.ws-rail-body'), keepTop = oldBody ? oldBody.scrollTop : 0;
     UI.clear(rail);
-    var fileIn = h('input', { type: 'file', accept: '.mzML,.mzml,.json,.gz', multiple: true, hidden: true,
+    var fileIn = h('input', { type: 'file', accept: '.mzML,.mzml,.json,.gz,.murosense', multiple: true, hidden: true,
                               onchange: function () { A.addFiles(fileIn.files); fileIn.value = ''; } });
     var list = h('div', { class: 'runs' });
     if (!A.runs.length) list.appendChild(h('p', { class: 'note' }, 'No runs yet. Add mzML files, or open the example.'));
@@ -23463,7 +23503,7 @@ APP.views.analyse = (function () {
       h('button', { class: 'btn sm primary', onclick: function () { fileIn.click(); } }, UI.icon('upload'), 'Add mzML'), fileIn,
       h('button', { class: 'btn sm ghost', title: 'Hide the runs panel', 'aria-label': 'Hide the runs panel', onclick: function () { setRail(false); } }, UI.icon('left'))));
     var nDone = A.runs.filter(function (r) { return r.status === 'done' && r.result; }).length;
-    var openIn = h('input', { type: 'file', accept: '.json,.gz,.zip,application/json,application/gzip,application/zip', multiple: true, hidden: true,
+    var openIn = h('input', { type: 'file', accept: '.json,.gz,.zip,.murosense,application/json,application/gzip,application/zip', multiple: true, hidden: true,
                               onchange: function () { A.addFiles(openIn.files); openIn.value = ''; } });
     rail.appendChild(h('div', { class: 'ws-rail-body' }, list,
       h('div', { class: 'row', style: { gap: '6px' } },
@@ -23471,7 +23511,7 @@ APP.views.analyse = (function () {
           UI.icon('download'), 'Save session (' + nDone + ')') : null,
         nDone ? h('button', { class: 'btn sm', onclick: function () { A.saveBundle(); }, title: 'Everything in one compressed .zip: results, data, parameters, library, structures, fragment evidence, figures and a methods text' },
           UI.icon('download'), 'Save bundle') : null,
-        h('button', { class: 'btn sm ghost', onclick: function () { openIn.click(); }, title: 'Open a saved analysis, session or bundle (.json, .json.gz or .zip)' }, UI.icon('open'), 'Open saved'), openIn,
+        h('button', { class: 'btn sm ghost', onclick: function () { openIn.click(); }, title: 'Open a saved analysis, session or bundle (.json, .murosense, .json.gz or .zip)' }, UI.icon('open'), 'Open saved'), openIn,
         A.runs.some(function (r) { return r.source === 'example'; }) ? null :
           h('button', { class: 'btn sm ghost', onclick: A.loadExample }, 'Open the example')),
       settingsCard()));
@@ -23751,7 +23791,7 @@ APP.views.analyse = (function () {
     runPanes(run);
   }
   function emptyMain() {
-    var fileIn = h('input', { type: 'file', accept: '.mzML,.mzml,.json,.gz', multiple: true, hidden: true, onchange: function () { A.addFiles(fileIn.files); fileIn.value = ''; } });
+    var fileIn = h('input', { type: 'file', accept: '.mzML,.mzml,.json,.gz,.murosense', multiple: true, hidden: true, onchange: function () { A.addFiles(fileIn.files); fileIn.value = ''; } });
     var drop = h('div', { class: 'drop', style: { 'max-width': '560px' } },
       h('h3', null, 'Drop mzML files here'),
       h('p', { class: 'muted' }, 'Centroided mzML converted with msConvert. Waters MSᴱ fragments are used as evidence; other files are searched on MS1 alone. Nothing is uploaded.'),
@@ -30728,7 +30768,7 @@ APP.views.guide = (function () {
         [h('b', null, 'Save the chromatogram. '), h('i', null, 'SVG'), ' saves the view as shown as a vector figure (editable in Illustrator or Inkscape), ', h('i', null, 'PNG'), ' as a picture at three times the size, marked for printing 18 cm wide; both on a light background with the run’s name and a legend of the traces shown.'],
         [h('b', null, 'Re-analyse. '), 'Changing a search setting applies to new runs. The bottom of the runs panel says when the open run was analysed with different settings, or when its library has been edited since (each run keeps the library exactly as it was searched, and the notice names what changed), and ', h('i', null, 'Re-analyse with these settings'), ' runs it again. With more than one run in the list it asks whether the settings are for the open run only or for all of them; all of them are then queued as one batch (a run being analysed at that moment finishes first and is queued again). A run reopened from a saved analysis has no mzML attached: add the file again to re-analyse it.'],
         [h('b', null, 'Rename a sample. '), 'Double-click a run’s name in the runs panel or in the summary (or use its pencil) and type a name of your own; Enter keeps it, Escape cancels, an empty name brings the original back. The new name is used everywhere from then on -- tables, charts, figures and file names -- while saved files and exports keep the original (file) name beside it. Compare renames many samples at once.'],
-        [h('b', null, 'Open saved work. '), h('i', null, 'Open saved'), ' in the runs panel, or ', h('i', null, 'Open a saved analysis, session or bundle'), ' on the home screen, reads a saved analysis, a session or a bundle (.json, .json.gz or .zip); dropping the file on the page works too.'],
+        [h('b', null, 'Open saved work. '), h('i', null, 'Open saved'), ' in the runs panel, or ', h('i', null, 'Open a saved analysis, session or bundle'), ' on the home screen, reads a saved analysis (.json), a session (.murosense; sessions saved before version 3.25 end in .json.gz) or a bundle (.zip); dropping the file on the page works too. In the installed app (see Install as an app), a double-click on a .murosense file opens it.'],
         [h('b', null, 'Theme. '), 'One button in the header switches between the light and the dark theme; it shows the one it switches to. Until it is used, the page follows the system. Chromatograms, heat maps and drawings follow the theme on screen; saved figures are always drawn on white.'],
         [h('b', null, 'Batches. '), 'When several runs are added together (or more are added while others wait), the foot of the runs panel shows how many of them have been analysed, the time taken so far and about how long is left. The runs list keeps its scroll position as runs finish.'],
         [h('b', null, 'Keyboard. '), 'Tab reaches every table row that opens something and every sortable column heading; Enter or Space opens the row or sorts by the column. Escape closes the evidence panel, and ↑ and ↓ step through the species while it is open.']])]));
@@ -30804,9 +30844,10 @@ APP.views.guide = (function () {
 
     body.appendChild(sec('saving', 'Saving and the bundle', [
       p('Each run saves as an Excel workbook or a CSV of its species (Analyse), or as an analysis file that opens again with every result and evidence (Save analysis); ', h('i', null, 'Save session'), ' keeps all runs in one file, with their names, groups, order and the reference.'),
-      p(h('b', null, 'The session’s name and the folder. '), 'Saving a session or a bundle asks for the session’s name first (the last one given is filled in); the session file (name.murosense-session.json.gz), the bundle (name_bundle.zip), the comparison workbook (name_comparison.xlsx) and every table or figure saved from Compare (name_total_PG.xlsx and so on) carry it. The name shows on the Samples card in Compare, where a click changes it, and it is kept in the session file. In Chrome and Edge each save then opens the computer’s own save dialog to choose the folder (and change the name), starting in the folder used last; ', h('i', null, 'Ask where to save each file'), ' in the name dialog turns this off, to save straight into the download folder. Other browsers save into their download folder, or ask where when that is turned on in their settings.'),
+      p(h('b', null, 'The session’s name and the folder. '), 'Saving a session or a bundle asks for the session’s name first (the last one given is filled in); the session file (name.murosense), the bundle (name_bundle.zip), the comparison workbook (name_comparison.xlsx) and every table or figure saved from Compare (name_total_PG.xlsx and so on) carry it. The name shows on the Samples card in Compare, where a click changes it, and it is kept in the session file. In Chrome and Edge each save then opens the computer’s own save dialog to choose the folder (and change the name), starting in the folder used last; ', h('i', null, 'Ask where to save each file'), ' in the name dialog turns this off, to save straight into the download folder. Other browsers save into their download folder, or ask where when that is turned on in their settings.'),
       p(h('b', null, 'One table or figure. '), 'Every table and figure, in Analyse’s tabs, the evidence panel, Compare, Structure and Library, has small buttons above it: ', h('i', null, 'Excel'), ' saves that table as shown (as filtered and sorted; numbers stay numbers, with the decimals shown on screen, a unit shared by a column in its heading, a group’s spread in a column of its own), ', h('i', null, 'SVG'), ' saves that figure as a vector figure and ', h('i', null, 'PNG'), ' as a picture at three times its size, marked at least 300 dpi (a wide one prints about 18 cm wide). Figures are always saved in the light theme’s colours, with their legend, whatever the theme on screen. The file is named after the sample and the section, such as Vc_WT_1_quality_UV_trace.png. The species table of a run saves every column of the species shown, and the long structure lists of the Library their full list.'),
       p(h('b', null, 'The bundle. '), h('i', null, 'Save bundle'), ' packs everything in one compressed .zip, to archive with a project or send with a manuscript: a README; ', h('b', null, 'methods.txt'), ', a methods text for publication (a general paragraph, one per sample, and the references); ', h('b', null, 'parameters.json'), ' with every setting and the chemistry rules each run used; ', h('b', null, 'samples.csv'), ' with the names used, the original names, the groups, the reference and total PG; per sample the full workbook, the species, the MS/MS fragments matched to each species (', h('b', null, 'fragment_evidence.csv'), ': label, m/z, error, co-elution), the profile metrics, the unexplained features, its methods paragraph and its chromatogram with the species named at its own peaks; the comparison workbook, stacked chromatograms and heat maps; the chemistries searched with every monomer and dimer they generate, your libraries and every structure identified; and the session itself, so the .zip opens again in MuroSense.')]));
+      p(h('b', null, 'Install as an app. '), 'Put on a web address (GitHub Pages, say) with its manifest (manifest.webmanifest), its service worker (sw.js) and its icons beside it, MuroSense can be installed from Edge or Chrome: the App available (install) button at the right of the address bar, then Install (or, in Edge, the ⋯ menu, Apps). It then opens in its own window from the Start menu or the taskbar, works offline once opened, and takes a newer copy put on the web address the next time it starts online. Sessions are saved as name.murosense: in the installed app a double-click on one (or Open with, MuroSense) opens it in a new window; the first time, the browser asks whether MuroSense may open such files. Settings and custom libraries are kept per address, so a copy opened as a file and the installed app keep their own; export and import a library to carry it over. Opened as a file, MuroSense works as before.'),
 
     body.appendChild(sec('pglang', 'Writing structures (PGLang)', [
       li([
@@ -31066,14 +31107,14 @@ APP.views.home = (function () {
 
   function mount(el) {
     root = el;
-    var fileIn = h('input', { type: 'file', accept: '.mzML,.mzml,.json,.gz', multiple: true, hidden: true, onchange: function () { A.addFiles(fileIn.files); fileIn.value = ''; } });
-    var openIn = h('input', { type: 'file', accept: '.json,.gz,.zip,application/json,application/gzip,application/zip', multiple: true, hidden: true, onchange: function () { Array.prototype.forEach.call(openIn.files, A.openAnalysis); openIn.value = ''; } });
+    var fileIn = h('input', { type: 'file', accept: '.mzML,.mzml,.json,.gz,.murosense', multiple: true, hidden: true, onchange: function () { A.addFiles(fileIn.files); fileIn.value = ''; } });
+    var openIn = h('input', { type: 'file', accept: '.json,.gz,.zip,.murosense,application/json,application/gzip,application/zip', multiple: true, hidden: true, onchange: function () { Array.prototype.forEach.call(openIn.files, A.openAnalysis); openIn.value = ''; } });
     var drop = h('div', { class: 'drop' },
       h('h3', null, 'Analyse mzML files'),
       h('p', { class: 'muted', style: { 'max-width': '46ch' } }, 'Drop centroided mzML here, or choose them. Several files queue up and are analysed one after another, inside this page.'),
       h('div', { class: 'home-actions' },
         h('button', { class: 'btn primary', onclick: function () { fileIn.click(); } }, UI.icon('upload'), 'Choose mzML files'),
-        h('button', { class: 'btn', onclick: function () { openIn.click(); }, title: 'A saved analysis or session (.json, .json.gz) or a bundle (.zip)' }, UI.icon('open'), 'Open a saved analysis, session or bundle'),
+        h('button', { class: 'btn', onclick: function () { openIn.click(); }, title: 'A saved analysis (.json), session (.murosense, or .json.gz from before) or bundle (.zip)' }, UI.icon('open'), 'Open a saved analysis, session or bundle'),
         h('button', { class: 'btn ghost', onclick: A.loadExample }, 'Open the example')), fileIn, openIn);
     ['dragenter', 'dragover'].forEach(function (t) { drop.addEventListener(t, function (e) { e.preventDefault(); drop.classList.add('over'); }); });
     ['dragleave', 'drop'].forEach(function (t) { drop.addEventListener(t, function () { drop.classList.remove('over'); }); });
