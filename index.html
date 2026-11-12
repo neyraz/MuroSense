@@ -364,6 +364,8 @@ table.tbl { border-collapse: collapse; width: 100%; font-size: 13px; }
 .samp-tbl td:nth-child(5) .input { min-width: 90px; }
 .samp-drag { cursor: grab; color: var(--faint); user-select: none; width: 18px; text-align: center; letter-spacing: -2px; }
 .samp-tbl tr.dragging { opacity: .5; background: var(--accent-soft); }
+.samp-paste > summary { cursor: pointer; font-size: 13px; font-weight: 600; color: var(--ink-2); }
+.samp-paste[open] > summary { margin-bottom: 2px; }
 .samp-btns { white-space: nowrap; }
 .samp-btns .btn { padding-inline: 6px; }
 /* the reference's column, and a group's spread */
@@ -371,6 +373,9 @@ th.refcol, td.refcol { background: color-mix(in srgb, var(--accent) 7%, transpar
 .sd { color: var(--muted); font-size: 10.5px; white-space: nowrap; }
 .heat-fig { overflow: auto; border: 1px solid var(--line-2); border-radius: 6px; background: var(--panel); }
 .heat-fig svg { display: block; }
+.dist-fig { overflow: auto; border: 1px solid var(--line-2); border-radius: 6px; background: var(--panel); }
+.dist-fig svg { display: block; }
+.dist-fig [data-run] { cursor: pointer; }
 .hm-pick { display: grid; gap: 1px; align-content: start; }
 .hm-item { padding: 3px 4px; border-radius: 5px; align-items: baseline; }
 .hm-item:hover { background: var(--sunk); }
@@ -22578,7 +22583,7 @@ var APP = (function () {
   var LABELS = { home: 'Home', analyse: 'Analyse', compare: 'Compare', structure: 'Structure', library: 'Library', guide: 'Guide' };
   var DEFAULT_SETTINGS = { profile: 'auto', reduction: 'auto', fdr: 0.01, maxOligomer: '', tol: 'auto', ms2: true, uv: true, rt0: '', rt1: '', focused: true, refs: true,
                            autoLibs: false, polarity: 'auto' };
-  var NAME = 'MuroSense', VERSION = '3.20';
+  var NAME = 'MuroSense', VERSION = '3.22';
 
   var A = {
     NAME: NAME, VERSION: VERSION, runs: [], current: null, view: 'home', views: {},
@@ -25531,14 +25536,14 @@ APP.views.compare = (function () {
      on screen is only marked out of date, and drawn when its tab opens. */
   var TABS = [['qc', 'Quality', 'The quality checklist of every sample: untick one to leave it out of the other sections'],
               ['stack', 'Chromatograms', 'Stacked chromatograms'], ['pg', 'Total PG', 'Total peptidoglycan from the UV'],
-              ['metrics', 'Profile metrics', 'The profile metrics and their chart'], ['heat', 'Heat map'], ['species', 'Species', 'Species abundances'],
+              ['metrics', 'Profile metrics', 'The profile metrics and their chart'], ['heat', 'Heat map'], ['dist', 'Distributions', 'Violin plots: how each metric or species spreads across the samples'], ['species', 'Species', 'Species abundances'],
               ['unex', 'Unexplained', 'Unexplained features across the samples'], ['all', 'All', 'Every section, one under another']];
-  var TAB_BOXES = { qc: ['qc'], stack: ['stackc'], pg: ['pg'], metrics: ['table', 'chart'], heat: ['heat'], species: ['species'], unex: ['unex'] };
-  var ORDER = ['qc', 'stackc', 'pg', 'table', 'chart', 'heat', 'species', 'unex'];
+  var TAB_BOXES = { qc: ['qc'], stack: ['stackc'], pg: ['pg'], metrics: ['table', 'chart'], heat: ['heat'], dist: ['dist'], species: ['species'], unex: ['unex'] };
+  var ORDER = ['qc', 'stackc', 'pg', 'table', 'chart', 'heat', 'dist', 'species', 'unex'];
   var dirty = {}, tabWrap = null, secsEl = null, selTimer = null;
   function tabBoxes(t) { return t === 'all' ? ORDER : TAB_BOXES[t] || ['qc']; }
   function shown(k) { return !!boxes[k] && tabBoxes(st.tab).indexOf(k) >= 0; }
-  function renderer(k) { return { qc: renderQuality, stackc: renderStack, pg: renderPG, table: renderTable, chart: renderChart, heat: renderHeat, species: renderSpecies, unex: renderUnex }[k]; }
+  function renderer(k) { return { qc: renderQuality, stackc: renderStack, pg: renderPG, table: renderTable, chart: renderChart, heat: renderHeat, dist: renderDist, species: renderSpecies, unex: renderUnex }[k]; }
   /* whether a section can be skipped now: not on screen (it is drawn when
      its tab opens), or nothing ticked (it says so, once) */
   function skip(k) {
@@ -25879,6 +25884,136 @@ APP.views.compare = (function () {
       rows.forEach(function (p, i) { p.inp.value = out[i]; });
       fillRef();
     }
+    /* ---- names and groups from a spreadsheet or a text file ----
+       Text copied from Excel (columns split by tabs) or a text file (one
+       sample a line; columns split by tabs, or by ; or , when every line
+       splits alike). Pasted into a name or group box, it fills that box and
+       the ones below it, in the order shown; a first column of original
+       (file) names matches the samples by name instead, in any order:
+       original name, name, group. A first line of headings (Original name,
+       Name, Group, in any order) says which column is which. An empty name
+       leaves the name as it is; an empty group means no group. */
+    function ordered() { return UI.$$('tr', tb).map(function (tr) { return rows.filter(function (p) { return p.tr === tr; })[0]; }); }
+    function keyOf(s) { return String(s || '').trim().toLowerCase().replace(/\.(mzml|mzxml|mzdata|raw|wiff|d|mgf)$/i, ''); }
+    function splitLines(text) {
+      var L = String(text || '').replace(/\r\n?/g, '\n').split('\n');
+      while (L.length && !L[L.length - 1].trim()) L.pop();
+      if (!L.length) return [];
+      var sep = '\t';
+      if (!L.some(function (l) { return l.indexOf('\t') >= 0; })) {
+        sep = null;
+        [';', ','].some(function (c) {
+          var n = L.filter(function (l) { return l.trim(); }).map(function (l) { return l.split(c).length; });
+          if (n.length && n[0] >= 2 && n.every(function (k) { return k === n[0]; })) { sep = c; return true; }
+          return false;
+        });
+      }
+      return L.map(function (l) { return (sep ? l.split(sep) : [l]).map(function (c) { return c.replace(/^\s*"(.*)"\s*$/, '$1').trim(); }); });
+    }
+    function sampleByKey() {
+      var m = {};
+      rows.forEach(function (p) { [p.run.origName, p.run.name, p.inp.value].forEach(function (n) { var k = keyOf(n); if (k && !m[k]) m[k] = p; }); });
+      return m;
+    }
+    /* what a pasted table would change: [{ p, name, group }] and a summary */
+    function plan(lines, start, col) {
+      var byKey = sampleByKey(), out = { sets: [], how: 'order', missed: [], extra: 0, head: false };
+      if (!lines.length) return out;
+      var cKey = -1, cName = col === 'grp' ? -1 : 0, cGrp = col === 'grp' ? 0 : 1;
+      /* a line of headings says which column is which */
+      var HG = /^(groups?|conditions?|genotypes?)$/, HK = /^(original( name| file( name)?)?|file( ?name)?|raw( file)?|run|sample id|id|data ?file)$/, HN = /^(name|new name|names?( to use)?|sample( name)?|label|strain)$/;
+      var h0 = lines[0].map(function (c) { return c.toLowerCase().replace(/\s+/g, ' ').trim(); });
+      if (!byKey[keyOf(lines[0][0])] && h0.some(function (c) { return HG.test(c) || HK.test(c) || HN.test(c); })) {
+        out.head = true; cKey = -1; cName = -1; cGrp = -1;
+        var nameCols = [];
+        h0.forEach(function (c, i) {
+          if (HG.test(c)) { if (cGrp < 0) cGrp = i; }
+          else if (HK.test(c)) { if (cKey < 0) cKey = i; }
+          else if (HN.test(c)) nameCols.push(i);
+        });
+        /* Sample | Name: the first of two name columns is the original */
+        if (cKey < 0 && nameCols.length >= 2) cKey = nameCols.shift();
+        cName = nameCols.length ? nameCols[0] : -1;
+        lines = lines.slice(1);
+      }
+      /* a first column of original names matches by name */
+      var firsts = lines.map(function (l) { return l[0]; }).filter(function (c) { return c; });
+      var hits = firsts.filter(function (c) { return byKey[keyOf(c)]; }).length;
+      if (cKey < 0 && !out.head && lines.some(function (l) { return l.length >= 2; }) && hits && hits >= firsts.length / 2) {
+        cKey = 0; cName = 1; cGrp = 2;
+        /* two columns: a second column of few, repeated values is the group */
+        if (lines.every(function (l) { return l.length <= 2; })) {
+          var sec = lines.map(function (l) { return l[1] || ''; }), kinds = sec.filter(function (v, i) { return sec.indexOf(v) === i; }).length;
+          if (sec.length >= 4 && kinds <= sec.length * 0.6) { cName = -1; cGrp = 1; }
+        }
+      }
+      if (cKey >= 0) {
+        out.how = 'name';
+        lines.forEach(function (l) {
+          var k = l[cKey]; if (!k) return;
+          var p = byKey[keyOf(k)];
+          if (!p) { out.missed.push(k); return; }
+          out.sets.push({ p: p, name: cName >= 0 ? l[cName] : undefined, group: cGrp >= 0 ? (l[cGrp] || '') : undefined });
+        });
+        return out;
+      }
+      var list = ordered().slice(start);
+      lines.forEach(function (l, i) {
+        if (i >= list.length) { out.extra++; return; }
+        out.sets.push({ p: list[i], name: cName >= 0 ? l[cName] : undefined, group: cGrp >= 0 && l.length > cGrp ? (l[cGrp] || '') : (cGrp === 0 ? '' : undefined) });
+      });
+      return out;
+    }
+    function fillFrom(P) {
+      var nN = 0, nG = 0;
+      P.sets.forEach(function (x) {
+        if (x.name !== undefined && x.name !== '' && x.p.inp.value !== x.name) { x.p.inp.value = x.name.slice(0, 120); nN++; }
+        if (x.group !== undefined && x.p.grp.value !== x.group) { x.p.grp.value = x.group.slice(0, 60); nG++; }
+      });
+      fillRef();
+      var msg = (nN || nG ? 'Filled in ' + [nN ? UI.plural(nN, 'name') : '', nG ? UI.plural(nG, 'group') : ''].filter(Boolean).join(' and ') : 'Nothing changed') +
+        (P.how === 'name' ? ', matched by original name' : '') + (P.missed.length ? '; not found: ' + P.missed.slice(0, 3).join(', ') + (P.missed.length > 3 ? ' and ' + (P.missed.length - 3) + ' more' : '') : '') +
+        (P.extra ? '; ' + UI.plural(P.extra, 'line') + ' more than the samples, left out' : '') + '. Apply keeps them.';
+      UI.toast(msg, 5200);
+      return msg;
+    }
+    function onPaste(e, p, col) {
+      var t = e.clipboardData ? e.clipboardData.getData('text/plain') : '';
+      if (!t || !/[\n\t]/.test(t.replace(/[\r\n]+$/, ''))) return;            /* one value: the usual paste */
+      e.preventDefault();
+      fillFrom(plan(splitLines(t), ordered().indexOf(p), col));
+    }
+    rows.forEach(function (p) {
+      p.inp.addEventListener('paste', function (e) { onPaste(e, p, 'name'); });
+      p.grp.addEventListener('paste', function (e) { onPaste(e, p, 'grp'); });
+    });
+    /* the same from a box, with a preview; and the table out, to edit in a spreadsheet */
+    var pasteBox = h('textarea', { class: 'input mono', rows: 5, style: { width: '100%', 'min-height': '96px' }, 'aria-label': 'Names and groups to paste',
+      placeholder: 'Paste here, one sample a line, e.g.\n20260730_FCPG29458\tWild type lacZ+\tWT\n20260730_FCPG29459\tΔrluA\nor just the new names (and groups), in the order shown below' });
+    var pastePrev = h('div', { class: 'small muted' });
+    function preview() {
+      var P = plan(splitLines(pasteBox.value), 0, 'name');
+      if (!P.sets.length && !P.missed.length) { pastePrev.textContent = 'Columns: original name, name, group (matched by the original name), or name and group in the order of the list; a line of headings may say which is which.'; return P; }
+      var ex = P.sets.slice(0, 3).map(function (x) { return (x.p.run.origName || x.p.run.name) + ' → ' + (x.name || x.p.inp.value) + (x.group !== undefined ? ' · ' + (x.group || 'no group') : ''); });
+      pastePrev.textContent = UI.plural(P.sets.length, 'sample') + (P.how === 'name' ? ', matched by original name' : ', in the order shown, from the first') + (P.head ? ' (first line read as headings)' : '') +
+        (P.missed.length ? '; not found: ' + P.missed.slice(0, 3).join(', ') + (P.missed.length > 3 ? '…' : '') : '') + (P.extra ? '; ' + UI.plural(P.extra, 'line') + ' too many' : '') + '. ' + ex.join(' · ') + (P.sets.length > 3 ? ' …' : '');
+      return P;
+    }
+    pasteBox.addEventListener('input', UI.debounce(preview, 200));
+    function tableText() {
+      return ['Original name\tName\tGroup'].concat(ordered().map(function (p) { return [p.run.origName || p.run.name, p.inp.value.trim(), p.grp.value.trim()].join('\t'); })).join('\n');
+    }
+    var copyBtn = h('button', { class: 'btn sm', type: 'button', title: 'Copy the list (original name, name, group) to paste into Excel, edit and paste back',
+      onclick: function () { pasteBox.value = tableText(); preview(); UI.copyText(pasteBox.value, copyBtn); pasteBox.select(); } }, 'Copy as table');
+    var pastePanel = h('details', { class: 'samp-paste' }, h('summary', null, 'Paste names and groups from Excel or a text file'),
+      h('div', { class: 'stack', style: { gap: '8px', 'margin-top': '8px' } },
+        h('p', { class: 'small muted' }, 'Copy cells in Excel (or lines in a text file) and paste them straight into a name or group box: it fills that box and the ones below it. Or paste a whole table here. ',
+          h('i', null, 'Copy as table'), ' gives the list to edit in a spreadsheet and paste back. Nothing changes until Apply.'),
+        pasteBox, pastePrev,
+        h('div', { class: 'row', style: { gap: '8px' } }, copyBtn,
+          h('button', { class: 'btn sm primary', type: 'button', onclick: function () { var P = preview(); if (!P.sets.length) { UI.toast(P.missed.length ? 'No line matched a sample.' : 'Paste some lines first.'); return; } fillFrom(P); } }, 'Fill in'),
+          h('button', { class: 'btn sm ghost', type: 'button', onclick: function () { pasteBox.value = ''; preview(); } }, 'Clear'))));
+    preview();
     function apply() {
       var names = rows.map(function (p) { return p.inp.value.trim() || p.run.origName || p.run.name; }), dup = names.filter(function (n, i) { return names.indexOf(n) !== i; });
       if (dup.length) UI.toast('Two samples share the name “' + dup[0] + '”; they are kept apart, but tables and figures will look alike.', 4200);
@@ -25892,7 +26027,7 @@ APP.views.compare = (function () {
     }
     var ok = h('button', { class: 'btn primary', type: 'button', onclick: apply }, 'Apply');
     Md = UI.modal({ title: 'Samples', wide: true,
-      sub: 'Names are used everywhere from now on (the original names stay in saved files and exports). Samples in one group are replicates: Compare can show each group’s mean. The order is the one every section and export follows.',
+      sub: 'Names are used everywhere from now on (the original names stay in saved files and exports). Samples in one group are replicates: Compare can show each group’s mean. The order is the one every section and export follows. Names and groups can be pasted from Excel or a text file, many at once.',
       body: [h('div', { class: 'row', style: { gap: '8px', 'flex-wrap': 'wrap' } },
                h('button', { class: 'btn sm', type: 'button', onclick: shorten, title: 'Drop the start and end that all the original names share' }, 'Shorten names'),
                h('button', { class: 'btn sm ghost', type: 'button', onclick: function () { rows.forEach(function (p) { p.inp.value = p.run.origName || p.run.name; }); fillRef(); } }, 'Original names'),
@@ -25905,6 +26040,7 @@ APP.views.compare = (function () {
                h('button', { class: 'btn sm', type: 'button', onclick: function () { sortBy(function (l) { return l.slice().reverse(); }); } }, 'Reverse'),
                h('button', { class: 'btn sm ghost', type: 'button', title: 'The order the runs were added in', onclick: function () { sortBy(function () { return runs.map(function (r) { return rows.filter(function (p) { return p.run === r; })[0]; }).sort(function (a, b) { return +a.run.id.slice(1) - +b.run.id.slice(1); }); }); } }, 'As added')),
              h('label', { class: 'row small', style: { gap: '8px' } }, h('b', null, 'Reference'), refSel, h('span', { class: 'muted' }, 'the sample, or the mean of a group, the others are compared with')),
+             pastePanel,
              dl,
              h('div', { class: 'tbl-wrap' }, h('table', { class: 'tbl samp-tbl' }, h('thead', null, h('tr', null, h('th', null, ''), h('th', { class: 'num' }, '#'), h('th', null, 'Original name'), h('th', null, 'Name to use'), h('th', null, 'Group'), h('th', null, ''))), tb))],
       foot: [h('button', { class: 'btn ghost', type: 'button', onclick: function () { Md.close(); } }, 'Cancel'), ok], focus: rows.length ? rows[0].inp : ok });
@@ -26717,7 +26853,7 @@ APP.views.compare = (function () {
       rel !== 'value' ? h('th', { class: 'num refcol', title: 'The reference: ' + A.refLabel(), 'data-x': 'Reference: ' + A.refLabel() }, h('span', { class: 'samp-ref' }, 'ref'), ' ', short(R.name)) : null,
       cs.map(function (c) {
         var cb = h('input', { type: 'checkbox', checked: !chartOff[c.id], title: 'Show ' + c.name + ' in the charts',
-          onchange: function () { chartOff[c.id] = !cb.checked; renderChart(); renderHeat(); renderSpeciesChart(); renderPG(); } });
+          onchange: function () { chartOff[c.id] = !cb.checked; renderChart(); renderHeat(); renderDist(); renderSpeciesChart(); renderPG(); } });
         return h('th', { class: 'num' + (isRefCol(c) ? ' refcol' : ''), 'data-x': c.name + (rel === 'diff' ? ' (difference)' : rel === 'ratio' ? ' (ratio)' : ''),
           title: c.name + (c.isGroup ? ': ' + c.members.map(function (r) { return r.name; }).join(', ') : '') + (isRefCol(c) ? ' · the reference' : '') },
           h('label', { class: 'colpick' }, cb, h('i', { style: { background: colorOf[c.id] } }), short(c.name)));
@@ -27102,10 +27238,7 @@ APP.views.compare = (function () {
   }
   /* the grid the figure shows: rows chosen, values, colours, order */
   function heatModel(runs, light) {
-    var isM = hm.what === 'metrics', all = isM ? metricItems(runs) : speciesItems(runs);
-    if (isM && !hm.mSel) { hm.mSel = {}; all.forEach(function (it) { hm.mSel[it.key] = true; }); }
-    if (!isM && !hm.sSel) { hm.sSel = {}; all.slice(0, 25).forEach(function (it) { hm.sSel[it.key] = true; }); }
-    var sel = isM ? hm.mSel : hm.sSel, rows = all.filter(function (it) { return sel[it.key]; });
+    var isM = hm.what === 'metrics', P = pickedItems(runs, isM), all = P.all, rows = P.rows;
     var mode = isM ? hm.scaleM : hm.scaleS, R = refCol();
     if ((mode === 'lr' || mode === 'dr') && !R) mode = isM ? 'z' : 'value';
     if (runs.length < 2 && (mode === 'z' || mode === 'minmax')) mode = isM ? 'minmax' : 'value';
@@ -27288,10 +27421,11 @@ APP.views.compare = (function () {
     catch (e) { return String(t).length * px * 0.58; }
   }
   /* choosing the rows: metrics by section, species by filter, with quick picks */
-  function heatChooser(runs) {
-    var isM = hm.what === 'metrics', Md, list = h('div', { class: 'hm-pick' }), count = h('span', { class: 'small muted' });
-    var all = isM ? metricItems(runs) : speciesItems(runs), sel = isM ? hm.mSel : hm.sSel, q = '', cls = 'all';
-    function sync() { count.textContent = all.filter(function (it) { return sel[it.key]; }).length + ' of ' + all.length + ' chosen'; renderHeat(); }
+  function heatChooser(runs, isMArg) {
+    var isM = isMArg === undefined ? hm.what === 'metrics' : isMArg, Md, list = h('div', { class: 'hm-pick' }), count = h('span', { class: 'small muted' });
+    var all = pickedItems(runs, isM).all, sel = isM ? hm.mSel : hm.sSel, q = '', cls = 'all';
+    /* the heat map and the distributions show the same rows */
+    function sync() { count.textContent = all.filter(function (it) { return sel[it.key]; }).length + ' of ' + all.length + ' chosen'; renderHeat(); renderDist(); }
     function fill() {
       UI.clear(list);
       var t = q.trim().toLowerCase(), lastSect = null, nShown = 0;
@@ -27305,7 +27439,7 @@ APP.views.compare = (function () {
         var c = h('input', { type: 'checkbox', checked: !!sel[it.key], onchange: function () { if (c.checked) sel[it.key] = true; else delete sel[it.key]; sync(); } });
         list.appendChild(h('label', { class: 'check hm-item' }, c, h('span', null, it.label), isM ? null : h('span', { class: 'tiny muted' }, ' ' + UI.pct(it.mean, 2) + '% mean · ' + it.full)));
       });
-      if (!isM && shown > 400) list.appendChild(h('p', { class: 'small muted' }, 'The first 400 are listed; narrow the filter to see the rest.'));
+      if (!isM && nShown > 400) list.appendChild(h('p', { class: 'small muted' }, 'The first 400 are listed; narrow the filter to see the rest.'));
     }
     function setAll(fn) { all.forEach(function (it, i) { if (fn(it, i)) sel[it.key] = true; else delete sel[it.key]; }); fill(); sync(); }
     var tools = [h('button', { class: 'btn sm', type: 'button', onclick: function () { setAll(function () { return true; }); } }, 'All'),
@@ -27317,7 +27451,7 @@ APP.views.compare = (function () {
       tools.unshift(search, cseg);
     }
     fill(); sync();
-    Md = UI.modal({ title: isM ? 'Metrics in the heat map' : 'Species in the heat map', sub: isM ? 'Tick the metrics to show; the heat map follows at once.' : 'Ordered by their mean share across the samples; tick the species to show.',
+    Md = UI.modal({ title: isM ? 'Metrics in the heat map and distributions' : 'Species in the heat map and distributions', sub: isM ? 'Tick the metrics to show; the heat map follows at once.' : 'Ordered by their mean share across the samples; tick the species to show.',
       body: [h('div', { class: 'row', style: { gap: '8px', 'flex-wrap': 'wrap' } }, tools, h('span', { class: 'spacer' }), count), list],
       foot: [h('button', { class: 'btn primary', type: 'button', onclick: function () { Md.close(); } }, 'Done')] });
   }
@@ -27386,7 +27520,7 @@ APP.views.compare = (function () {
         var t = e.target && e.target.closest ? e.target.closest('[data-rm]') : null;
         if (!t) return;
         delete (isM ? hm.mSel : hm.sSel)[t.getAttribute('data-rm')];
-        renderHeat();
+        renderHeat(); renderDist();
       });
     }
     card.appendChild(h('div', { class: 'card-b stack', style: { gap: '8px' } }, fig,
@@ -27394,6 +27528,415 @@ APP.views.compare = (function () {
         'Species are matched by composition, as in the table above. A z-score shows how each species differs between the samples; % of signal shows how much there is. Grey cells: not found in that sample.') +
         (R ? ' Against the reference (◆, ' + A.refLabel() + '): ratio colours each cell by log₂ of its value over the reference’s, the high colour for more and the low colour for less (red and blue in Blue – red), full at 4-fold' + (isM ? '' : '; a ring marks a species not in the reference (new) or found only in it (lost); difference colours by percentage points on one scale') + '.' :
           ' Choose a reference sample (Samples, above) to colour every cell against it.'))));
+  }
+
+  /* ---------------- distributions: violin plots ----------------
+     One panel per metric (or species). Every sample is a dot, over the shape
+     of their spread: a violin, a kernel density estimate (Gaussian kernel,
+     Silverman's bandwidth, drawn over the range of the data), from five
+     samples on; a box marks the middle half of the samples and a bar their
+     median. Against a reference the panels share one axis, the log2 ratio
+     to it; otherwise each shows its values on its own axis. A sample far
+     from the rest is named: more than 3 robust SDs (1.4826 × the median
+     absolute deviation; the mean absolute deviation × 1.2533 when half the
+     samples are alike) from the median, or (Tukey) beyond 1.5 × the
+     interquartile range past the quartiles. The rows are those chosen for
+     the heat map. */
+  var dv = { what: UI.store.get('dvWhat', 'metrics'), axis: UI.store.get('dvAxis', 'lr'), split: !!UI.store.get('dvSplit', false),
+             hits: UI.store.get('dvHits', 'mad'), same: !!UI.store.get('dvSame', false), hi: null };
+  var DV_MIN = 5, DV_LIM = 5, DV_LABELS = 6;
+  var DV_RULE = { mad: '3 robust SDs from the median', iqr: '1.5 × IQR beyond the quartiles', none: '' };
+  /* the rows chosen (shared with the heat map): every metric, or the 25
+     species with the largest mean share, until changed */
+  function pickedItems(runs, isM) {
+    var all = isM ? metricItems(runs) : speciesItems(runs);
+    if (isM && !hm.mSel) { hm.mSel = {}; all.forEach(function (it) { hm.mSel[it.key] = true; }); }
+    if (!isM && !hm.sSel) { hm.sSel = {}; all.slice(0, 25).forEach(function (it) { hm.sSel[it.key] = true; }); }
+    var chosenRows = isM ? hm.mSel : hm.sSel;
+    return { all: all, rows: all.filter(function (it) { return chosenRows[it.key]; }) };
+  }
+  function qtl(s, p) { if (!s.length) return null; var x = (s.length - 1) * p, i = Math.floor(x); return i + 1 < s.length ? s[i] + (x - i) * (s[i + 1] - s[i]) : s[i]; }
+  function dstats(xs) {
+    var n = xs.length;
+    if (!n) return { n: 0 };
+    var s = xs.slice().sort(function (a, b) { return a - b; });
+    var mean = s.reduce(function (a, b) { return a + b; }, 0) / n;
+    var sd = n > 1 ? Math.sqrt(s.reduce(function (a, b) { return a + (b - mean) * (b - mean); }, 0) / (n - 1)) : 0;
+    var med = qtl(s, 0.5), dev = s.map(function (x) { return Math.abs(x - med); }).sort(function (a, b) { return a - b; });
+    var mad = 1.4826 * qtl(dev, 0.5);
+    if (!(mad > 1e-12)) mad = 1.2533 * dev.reduce(function (a, b) { return a + b; }, 0) / n;
+    return { n: n, mean: mean, sd: sd, med: med, q1: qtl(s, 0.25), q3: qtl(s, 0.75), min: s[0], max: s[n - 1], mad: mad };
+  }
+  /* how far a value lies from the rest, under the rule chosen: 0 when it
+     does not, else the distance (robust SDs, or IQRs from the median) */
+  function dvFar(S, x) {
+    if (!(S.n >= DV_MIN) || dv.hits === 'none') return 0;
+    if (dv.hits === 'iqr') {
+      var iqr = S.q3 - S.q1, eps = 1e-9 * (Math.abs(S.med) + 1);
+      if (x >= S.q1 - 1.5 * iqr - eps && x <= S.q3 + 1.5 * iqr + eps) return 0;
+      return iqr > 0 ? Math.abs(x - S.med) / iqr : 1e9;
+    }
+    if (!(S.mad > 1e-12)) return 0;
+    var z = Math.abs(x - S.med) / S.mad;
+    return z > 3 ? z : 0;
+  }
+  function dvKde(xs, S) {
+    if (xs.length < DV_MIN || !(S.max > S.min)) return null;
+    var iqr = S.q3 - S.q1, spread = iqr > 0 ? Math.min(S.sd, iqr / 1.34) : S.sd;
+    if (!(spread > 0)) return null;
+    var bw = 0.9 * spread * Math.pow(xs.length, -0.2), N = 50, pts = [], mx = 0, k;
+    function d(y) { var t = 0; xs.forEach(function (x) { var u = (y - x) / bw; t += Math.exp(-0.5 * u * u); }); return t; }
+    for (k = 0; k <= N; k++) { var y = S.min + (S.max - S.min) * k / N, v = d(y); pts.push([y, v]); if (v > mx) mx = v; }
+    return { pts: pts, mx: mx, bw: bw, at: function (y) { return mx > 0 ? d(y) / mx : 0; } };
+  }
+  /* a steady spread of the dots across a violin: each sample its own place */
+  function hash01(s) { var x = 2166136261; s = String(s); for (var i = 0; i < s.length; i++) { x ^= s.charCodeAt(i); x = Math.imul(x, 16777619); } return ((x >>> 0) % 10007) / 10007; }
+  function distRuns() { return chosen().filter(function (r) { return !chartOff[r.id]; }); }
+  function distModel(runs) {
+    var isM = dv.what === 'metrics', P = pickedItems(runs, isM), R = refCol(), lr = dv.axis === 'lr' && !!R;
+    var refIds = {};
+    runs.forEach(function (r) { if (isRefCol(r) || (A.ref && A.ref.group && r.group === A.ref.group)) refIds[r.id] = true; });
+    /* one distribution of all the samples, or one per group (the samples in
+       no group together, last) */
+    var groups = [];
+    if (dv.split && hasGroups(runs)) {
+      var by = {}, none = null;
+      runs.forEach(function (r, i) {
+        if (!r.group) { if (!none) none = { name: 'In no group', idx: [], color: '--ink-2', none: true }; none.idx.push(i); return; }
+        if (!by[r.group]) { by[r.group] = { name: r.group, idx: [], color: colorOf[r.id] || '--accent' }; groups.push(by[r.group]); }
+        by[r.group].idx.push(i);
+      });
+      if (none) groups.push(none);
+    } else groups.push({ name: 'All samples', idx: runs.map(function (r, i) { return i; }), color: '--accent', all: true });
+    var maxAbs = 0;
+    /* the axis around 0 for log2 ratios: the panel's own (or, one scale, the
+       largest of all), from ±0.5 to ±5 (32-fold); beyond it, a triangle */
+    function limOf(m) { return Math.min(DV_LIM, Math.max(0.5, Math.ceil(m * 1.1 * 4) / 4)); }
+    var items = P.rows.map(function (it) {
+      var mAbs = 0;
+      var pts = runs.map(function (r, i) {
+        var v = it.vals[i];
+        if (v === null || v === undefined || !isFinite(v)) return null;
+        var p = { i: i, run: r, v: v, x: null, fl: null, ref: !!refIds[r.id], far: 0 };
+        if (lr) {
+          var rv = it.ref;
+          if (rv === null || rv === undefined || (!(v > 0) && !(rv > 0))) return null;      /* in neither */
+          if (!(rv > 0)) p.fl = 'new'; else if (!(v > 0)) p.fl = 'lost';
+          else { p.x = Math.log2(v / rv); mAbs = Math.max(mAbs, Math.abs(p.x)); maxAbs = Math.max(maxAbs, Math.abs(p.x)); }
+        } else p.x = v;
+        return p;
+      });
+      var dists = groups.map(function (g) {
+        var ps = g.idx.map(function (i) { return pts[i]; }).filter(Boolean);
+        var xs = ps.filter(function (p) { return !p.fl; }).map(function (p) { return p.x; });
+        var S = dstats(xs);
+        ps.forEach(function (p) { p.far = p.fl ? (dv.hits === 'none' ? 0 : 1e9) : dvFar(S, p.x); });
+        return { g: g, ps: ps, S: S, K: dvKde(xs, S) };
+      });
+      return { it: it, pts: pts, dists: dists, lim: lr ? limOf(mAbs) : null };
+    });
+    var lim = lr ? limOf(maxAbs) : null;
+    return { isM: isM, all: P.all, items: items, groups: groups, lr: lr, lim: lim, R: R, runs: runs };
+  }
+  function dvUnit(it, isM) { return it.area ? '' : isM ? (it.len ? '' : '%') : '%'; }
+  function dvVal(it, v, isM) {
+    if (v === null || v === undefined) return '–';
+    if (it.area) return T.fmtArea(v);
+    if (isM) return it.len ? UI.fx(v, 1) : UI.pct(v, 1) + '%';
+    return v > 0 ? (v >= 10 ? v.toFixed(1) : v.toFixed(2)) + '%' : 'not found';
+  }
+  function dvFarText(p) {
+    if (p.fl === 'new') return 'not in the reference';
+    if (p.fl === 'lost') return 'not in this sample';
+    if (!p.far) return '';
+    if (p.far >= 1e9) return 'outside the fences (the quartiles alike)';
+    return p.far.toFixed(1) + (dv.hits === 'iqr' ? ' IQR' : ' robust SD') + ' from the median';
+  }
+  /* the width of one panel: the axis, a slot per distribution, and (one
+     distribution) a column for the names */
+  function dvPanelW(nG) { return 42 + nG * (nG > 1 ? 58 : 92) + (nG > 1 ? 0 : 86) + 14; }
+  /* a label in at most two lines */
+  function wrap2(t, px, wt, maxW) {
+    var words = String(t).split(' '), l1 = '', i = 0;
+    for (; i < words.length; i++) { var c = l1 ? l1 + ' ' + words[i] : words[i]; if (l1 && measureText(c, px, wt) > maxW) break; l1 = c; }
+    var rest = words.slice(i).join(' ');
+    if (!rest) return [fitText(l1, px, wt, maxW)];
+    return [l1, fitText(rest, px, wt, maxW)];
+  }
+  function distSVG(Mo, o) {
+    o = o || {};
+    var X = !!o.light, esc = UI.esc;
+    function C(name, fb) { return X ? (UI.css(name) || fb) : 'var(' + name + ')'; }
+    function CC(c) { return c && c.indexOf('--') === 0 ? C(c, '#0f6b6b') : c; }
+    var ink = C('--ink', '#172124'), ink2 = C('--ink-2', '#3a4649'), muted = C('--muted', '#63706d'), bg = C('--panel', '#ffffff'), line = C('--line', '#dbe0dc'), acc = C('--accent', '#0f6b6b');
+    var fam = X ? (UI.css('--sans') || 'sans-serif') : 'var(--sans)';
+    function f1(v) { return (+v).toFixed(1); }
+    function txt(x, y, t, size, fill, extra) {
+      return '<text x="' + f1(x) + '" y="' + f1(y) + '" style="font-family:' + esc(fam) + ';font-size:' + size + 'px;fill:' + fill + '"' + (extra || '') + '>' + t + '</text>';
+    }
+    function diamond(x, y, r, fill, extra) { return '<path d="M' + f1(x) + ',' + f1(y - r) + 'L' + f1(x + r) + ',' + f1(y) + 'L' + f1(x) + ',' + f1(y + r) + 'L' + f1(x - r) + ',' + f1(y) + 'Z" style="fill:' + fill + ';stroke:' + bg + ';stroke-width:0.8"' + (extra || '') + '/>'; }
+    function tri(x, y, up, fill, extra) { var s = up ? -1 : 1; return '<path d="M' + f1(x) + ',' + f1(y + s * 4.5) + 'L' + f1(x + 4.2) + ',' + f1(y - s * 3) + 'L' + f1(x - 4.2) + ',' + f1(y - s * 3) + 'Z" style="fill:' + fill + '"' + (extra || '') + '/>'; }
+    var nG = Mo.groups.length, split = nG > 1, SW = split ? 58 : 92, AX = 42, LBW = split ? 0 : 86;
+    var PW = dvPanelW(nG), PH = 252, TT = 40, PB = split ? 30 : 22, plotH = PH - TT - PB - 8;
+    var cols = Math.max(1, Math.min(Mo.items.length, o.cols || 4)), rowsN = Math.ceil(Mo.items.length / cols);
+    var W = Math.max(cols * PW + 16, 520);
+    var basisTxt = basis === 'uv' ? 'UV' : 'MS';
+    var title = (Mo.isM ? 'Profile metrics (' + basisTxt + ')' : 'Species, % of identified ' + basisTxt + ' signal') + ' · ' +
+      (Mo.lr ? 'log₂ ratio to the reference (' + A.refLabel() + ')' + (dv.same ? ', one scale' : '') : 'values') + ' · ' + UI.plural(Mo.runs.length, 'sample');
+    var out = [];
+    out.push(txt(12, 21, esc(title), 13, ink, ' font-weight="700"'));
+    /* the key, wrapped to the width */
+    var lx = 12, ly = 42, keyParts = [];
+    function key(sym, label) {
+      var w = 14 + measureText(label, 10.5, 400) + 18;
+      if (lx > 12 && lx + w > W - 12) { lx = 12; ly += 17; }
+      keyParts.push(sym(lx + 5, ly - 3.5)); keyParts.push(txt(lx + 14, ly, esc(label), 10.5, ink2));
+      lx += w;
+    }
+    key(function (x, y) { return '<circle cx="' + f1(x) + '" cy="' + f1(y) + '" r="2.8" style="fill:' + ink2 + ';opacity:0.55"/>'; }, 'a sample');
+    key(function (x, y) { return diamond(x, y, 4.6, acc); }, 'the reference' + (A.ref && A.ref.group ? ' (its samples)' : ''));
+    if (dv.hits !== 'none') key(function (x, y) { return '<circle cx="' + f1(x) + '" cy="' + f1(y) + '" r="3.3" style="fill:' + ink + '"/>'; }, (split ? 'far from the rest: ' + DV_RULE[dv.hits] + ' (listed below the figure)' : 'named: ' + DV_RULE[dv.hits] + ' (the farthest ' + DV_LABELS + ' in a panel)'));
+    key(function (x, y) { return '<rect x="' + f1(x - 2.5) + '" y="' + f1(y - 6) + '" width="5" height="12" style="fill:' + ink2 + ';opacity:0.7"/><line x1="' + f1(x - 6) + '" x2="' + f1(x + 6) + '" y1="' + f1(y) + '" y2="' + f1(y) + '" style="stroke:' + ink + ';stroke-width:2"/>'; }, 'median, middle half and range');
+    key(function (x, y) { return '<path d="M' + f1(x - 5) + ',' + f1(y + 5) + 'C' + f1(x - 3) + ',' + f1(y - 6) + ' ' + f1(x + 3) + ',' + f1(y - 6) + ' ' + f1(x + 5) + ',' + f1(y + 5) + 'Z" style="fill:' + acc + ';fill-opacity:0.22;stroke:' + acc + '"/>'; }, 'the spread (from ' + DV_MIN + ' samples on)');
+    if (Mo.lr) key(function (x, y) { return tri(x, y, true, ink); }, 'not in the reference, or beyond the axis (▼ not in the sample)');
+    var head = ly + 16, H = head + rowsN * PH + 8;
+    out.unshift('<rect width="' + W + '" height="' + H + '" style="fill:' + bg + '"/>');
+    out = out.concat(keyParts);
+    var hiRun = dv.hi;
+    Mo.items.forEach(function (I, k) {
+      var px = 8 + (k % cols) * PW, py = head + Math.floor(k / cols) * PH, it = I.it;
+      out.push('<rect x="' + f1(px) + '" y="' + f1(py) + '" width="' + (PW - 8) + '" height="' + (PH - 8) + '" rx="6" style="fill:none;stroke:' + line + '">' +
+        (it.full ? '<title>' + esc(it.label + ' · ' + it.full) + '</title>' : '') + '</rect>');
+      var unit = dvUnit(it, Mo.isM), tl = wrap2(it.label + (!Mo.lr && unit ? ' (' + unit + ')' : ''), 11.5, 600, PW - 26);
+      tl.forEach(function (s, j) { out.push(txt(px + 10, py + 17 + j * 14, esc(s), 11.5, ink, ' font-weight="600"')); });
+      var y0 = py + TT, y1 = y0 + plotH, lo, hi;
+      if (Mo.lr) { var Lm = dv.same ? Mo.lim : I.lim; lo = -Lm; hi = Lm; }
+      else {
+        var xs = I.pts.filter(function (p) { return p && p.x !== null; }).map(function (p) { return p.x; });
+        lo = xs.length ? Math.min.apply(null, xs) : 0; hi = xs.length ? Math.max.apply(null, xs) : 1;
+        var pad = (hi - lo) * 0.08 || Math.abs(hi) * 0.1 || 1;
+        lo = lo >= 0 && lo - pad < 0 ? 0 : lo - pad; hi += pad;
+      }
+      function Y(v) { return y1 - (v - lo) / (hi - lo) * plotH; }
+      var xA = px + AX, xB = px + AX + nG * SW;
+      /* the axis: grid lines and values */
+      var tk, stp;
+      tk = UI.plot.ticks(lo, hi, 4); stp = UI.plot.niceStep(hi - lo, 4);
+      tk.forEach(function (t) {
+        var y = Y(t);
+        out.push('<line x1="' + f1(xA) + '" x2="' + f1(xB) + '" y1="' + f1(y) + '" y2="' + f1(y) + '" style="stroke:' + line + ';stroke-width:' + (Mo.lr && t === 0 ? 0 : 1) + '"/>');
+        var lab = Mo.lr ? (t === 0 ? '0' : (t > 0 ? '+' : '−') + UI.plot.tickLabel(Math.abs(t), stp)) : (it.area ? T.fmtArea(t) : UI.plot.tickLabel(t, stp));
+        out.push(txt(xA - 6, y + 3.6, esc(lab), 10, muted, ' text-anchor="end"'));
+      });
+      if (Mo.lr) out.push('<line x1="' + f1(xA) + '" x2="' + f1(xB) + '" y1="' + f1(Y(0)) + '" y2="' + f1(Y(0)) + '" style="stroke:' + ink2 + ';stroke-width:1;stroke-dasharray:4 3"/>');
+      out.push('<line x1="' + f1(xA) + '" x2="' + f1(xA) + '" y1="' + f1(y0) + '" y2="' + f1(y1) + '" style="stroke:' + ink2 + ';stroke-width:1"/>');
+      I.dists.forEach(function (D, gi) {
+        var cx = xA + gi * SW + SW / 2, hw = SW / 2 - 7, col = CC(D.g.color), S = D.S, K = D.K;
+        /* the violin */
+        if (K) {
+          var L = [], Rr = [];
+          K.pts.forEach(function (q) {
+            var yy = Y(Math.max(lo, Math.min(hi, q[0]))), w = hw * q[1] / K.mx;
+            L.push(f1(cx - w) + ',' + f1(yy)); Rr.push(f1(cx + w) + ',' + f1(yy));
+          });
+          out.push('<polygon points="' + L.concat(Rr.reverse()).join(' ') + '" style="fill:' + col + ';fill-opacity:0.2;stroke:' + col + ';stroke-width:1;stroke-opacity:0.85"/>');
+        }
+        /* range, middle half, median */
+        function cl(v) { return Math.max(lo, Math.min(hi, v)); }
+        if (S.n >= 2) {
+          out.push('<line x1="' + f1(cx) + '" x2="' + f1(cx) + '" y1="' + f1(Y(cl(S.min))) + '" y2="' + f1(Y(cl(S.max))) + '" style="stroke:' + ink2 + ';stroke-width:1"/>');
+          out.push('<rect x="' + f1(cx - 3) + '" y="' + f1(Y(cl(S.q3))) + '" width="6" height="' + f1(Math.max(1, Y(cl(S.q1)) - Y(cl(S.q3)))) + '" style="fill:' + ink2 + ';opacity:0.7"/>');
+        }
+        if (S.n >= 1) out.push('<line x1="' + f1(cx - 9) + '" x2="' + f1(cx + 9) + '" y1="' + f1(Y(cl(S.med))) + '" y2="' + f1(Y(cl(S.med))) + '" style="stroke:' + ink + ';stroke-width:2.2"><title>' +
+          esc(D.g.name + ': median ' + (Mo.lr ? UI.signed(S.med, 2) + ' (log₂)' : dvVal(it, S.med, Mo.isM)) + ' · middle half ' + (Mo.lr ? UI.signed(S.q1, 2) + ' to ' + UI.signed(S.q3, 2) : dvVal(it, S.q1, Mo.isM) + ' to ' + dvVal(it, S.q3, Mo.isM)) + ' · n = ' + S.n) + '</title></line>');
+        /* the samples: dots spread across the violin, the far ones dark,
+           the reference a diamond; beyond the axis (or in only one of the
+           sample and the reference) a triangle at the edge */
+        var placed = D.ps.map(function (p) {
+          var u = hash01(p.run.id) - 0.5, y, edge = 0;
+          if (p.fl === 'new') { y = y0 + 5; edge = 1; }
+          else if (p.fl === 'lost') { y = y1 - 5; edge = -1; }
+          else if (p.x > hi) { y = y0 + 5; edge = 1; }
+          else if (p.x < lo) { y = y1 - 5; edge = -1; }
+          else y = Y(p.x);
+          var spread = edge ? 0.7 : K ? 0.85 * K.at(p.x) : 0.4;
+          return { p: p, x: cx + u * 2 * hw * spread, y: y, edge: edge };
+        });
+        placed.sort(function (a, b) { return (a.p.far ? 1 : 0) - (b.p.far ? 1 : 0) || (a.p.ref ? 1 : 0) - (b.p.ref ? 1 : 0); });
+        placed.forEach(function (q) {
+          var p = q.p, tip = p.run.name + ' · ' + it.label + ': ' + dvVal(it, p.v, Mo.isM) +
+            (Mo.lr ? (p.fl === 'new' ? ' · not in the reference' : p.fl === 'lost' ? ' · the reference has ' + dvVal(it, it.ref, Mo.isM) :
+              ' · ' + UI.fx(Math.pow(2, p.x), 2) + '× the reference (log₂ ' + UI.signed(p.x, 2) + ')') : '') +
+            (p.far ? ' · far from the rest: ' + dvFarText(p) : '') + (split ? ' · ' + D.g.name : '');
+          var at = ' data-run="' + esc(p.run.id) + '"', ttl = '<title>' + esc(tip) + '</title>';
+          var fill = p.far ? ink : ink2, op = p.far ? 0.95 : 0.55;
+          if (q.edge) out.push(tri(q.x, q.y, q.edge > 0, p.ref ? acc : fill, at).replace('/>', '>' + ttl + '</path>'));
+          else if (p.ref) out.push(diamond(q.x, q.y, 4.8, acc, at).replace('/>', '>' + ttl + '</path>'));
+          else out.push('<circle cx="' + f1(q.x) + '" cy="' + f1(q.y) + '" r="' + (p.far ? 3.3 : 2.8) + '" style="fill:' + fill + ';opacity:' + op + '"' + at + '>' + ttl + '</circle>');
+          if (hiRun && p.run.id === hiRun) out.push('<circle cx="' + f1(q.x) + '" cy="' + f1(q.y) + '" r="6.5" style="fill:none;stroke:' + acc + ';stroke-width:2"' + at + '>' + ttl + '</circle>');
+        });
+        /* names: the farthest few, and the sample picked, in a column at
+           the right, spread apart, each led back to its dot */
+        if (!split) {
+          var named = placed.filter(function (q) { return q.p.far; }).sort(function (a, b) { return b.p.far - a.p.far; });
+          var more = Math.max(0, named.length - DV_LABELS);
+          named = named.slice(0, DV_LABELS);
+          var hq = hiRun ? placed.filter(function (q) { return q.p.run.id === hiRun; })[0] : null;
+          if (hq && named.indexOf(hq) < 0) named.push(hq);
+          named.sort(function (a, b) { return a.y - b.y; });
+          var gap = 11.5, ys = named.map(function (q) { return q.y + 3.5; }), j;
+          for (j = 1; j < ys.length; j++) ys[j] = Math.max(ys[j], ys[j - 1] + gap);
+          if (ys.length && ys[ys.length - 1] > y1 + 2) { ys[ys.length - 1] = y1 + 2; for (j = ys.length - 2; j >= 0; j--) ys[j] = Math.min(ys[j], ys[j + 1] - gap); }
+          var lxp = cx + hw + 10;
+          named.forEach(function (q, j2) {
+            var isHi = hiRun && q.p.run.id === hiRun;
+            out.push('<line x1="' + f1(q.x + 3) + '" x2="' + f1(lxp - 2) + '" y1="' + f1(q.y) + '" y2="' + f1(ys[j2] - 3.5) + '" style="stroke:' + (isHi ? acc : muted) + ';stroke-width:0.7;opacity:0.8"/>');
+            out.push(txt(lxp, ys[j2], esc(fitText(q.p.run.name, 9.5, 600, LBW - 8, true)), 9.5, isHi ? acc : ink, ' font-weight="600" data-run="' + esc(q.p.run.id) + '"'));
+          });
+          if (more) out.push(txt(lxp, y1 + 15, '+' + more + ' more', 9.5, muted));
+        }
+        /* under the slot: the group and its count */
+        var nTot = D.ps.length;
+        out.push(txt(cx, y1 + (split ? 14 : 15), esc(split ? fitText(D.g.name, 10, 600, SW - 4) : 'n = ' + nTot), 10, split ? ink : muted, ' text-anchor="middle"' + (split ? ' font-weight="600"' : '')));
+        if (split) out.push(txt(cx, y1 + 26, 'n = ' + nTot, 9.5, muted, ' text-anchor="middle"'));
+      });
+    });
+    return { svg: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ' + W + ' ' + H + '" width="' + W + '" height="' + H + '" role="img" aria-label="Violin plots">' + out.join('') + '</svg>', w: W, h: H };
+  }
+  function distCols(nG) {
+    var box = boxes.dist, avail = (box && box.clientWidth ? box.clientWidth : 1100) - 50;
+    return Math.max(1, Math.floor(avail / dvPanelW(nG)));
+  }
+  function saveDist(fmt) {
+    var runs = distRuns(), F, Mo = distModel(runs), cols = distCols(Mo.groups.length);
+    UI.plot.withLight(function () { F = distSVG(Mo, { light: true, cols: cols }); });
+    var name = 'MuroSense_violins_' + (Mo.isM ? 'metrics' : 'species') + (Mo.lr ? '_log2ratio' : '_values');
+    if (fmt === 'svg') return UI.saveFile(name + '.svg', '<?xml version="1.0" encoding="UTF-8"?>\n' + F.svg + '\n', 'image/svg+xml');
+    var sc = F.w * F.h > 9e6 ? 2 : 3;
+    return UI.plot.svgToPng(F.svg, F.w, F.h, sc).then(function (b) { return b ? UI.plot.pngDpi(b, F.w * sc) : null; })
+      .then(function (b) { if (b) return UI.saveFile(name + '.png', b, 'image/png'); UI.toast('Could not make the picture.'); return false; });
+  }
+  /* the samples far from the rest, farthest first */
+  function distHits(Mo) {
+    var out = [];
+    Mo.items.forEach(function (I) { I.dists.forEach(function (D) { D.ps.forEach(function (p) { if (p.far) out.push({ p: p, it: I.it, D: D }); }); }); });
+    out.sort(function (a, b) { return b.p.far - a.p.far; });
+    return out;
+  }
+  function distSheets(Mo) {
+    var lr = Mo.lr, isM = Mo.isM, what = isM ? 'Metric' : 'Species', split = Mo.groups.length > 1;
+    var sumRows = [];
+    Mo.items.forEach(function (I) { I.dists.forEach(function (D) { var S = D.S; sumRows.push({ it: I.it, g: D.g.name, S: S, n: D.ps.length, far: D.ps.filter(function (p) { return p.far; }) }); }); });
+    function sv(k) { return function (r) { var v = r.S[k]; return v === undefined || v === null || !isFinite(v) ? null : v; }; }
+    var scale = lr ? 'log2 ratio to the reference (' + A.refLabel() + ')' : 'value';
+    var summary = { name: 'Summary', rows: sumRows, note: [(isM ? 'Profile metrics (' : 'Species, % of identified signal (') + (basis === 'uv' ? 'UV' : 'MS') + '): the spread across ' + UI.plural(Mo.runs.length, 'sample') + ', as the ' + scale +
+        '. Statistics leave out samples in only one of sample and reference. Far from the rest: ' + (DV_RULE[dv.hits] || 'not marked') + ' (MuroSense)'],
+      cols: [{ label: what, get: function (r) { return r.it.label; }, width: 30 }].concat(isM ? [] : [{ label: 'Structure (PGLang)', get: function (r) { return r.it.full || ''; }, width: 40 }])
+        .concat(split ? [{ label: 'Group', get: function (r) { return r.g; }, width: 14 }] : [])
+        .concat(lr ? [{ label: 'Reference value', get: function (r) { return r.it.ref; }, fmt: '0.000', width: 12 }] : [])
+        .concat([{ label: 'Samples', get: function (r) { return r.n; }, fmt: '0', width: 8 }, { label: 'n (on the axis)', get: function (r) { return r.S.n; }, fmt: '0', width: 9 },
+          { label: 'Median', get: sv('med'), fmt: '0.000', width: 10 }, { label: 'Q1', get: sv('q1'), fmt: '0.000', width: 10 }, { label: 'Q3', get: sv('q3'), fmt: '0.000', width: 10 },
+          { label: 'Min', get: sv('min'), fmt: '0.000', width: 10 }, { label: 'Max', get: sv('max'), fmt: '0.000', width: 10 }, { label: 'Mean', get: sv('mean'), fmt: '0.000', width: 10 },
+          { label: 'SD', get: sv('sd'), fmt: '0.000', width: 10 }, { label: 'Robust SD (1.4826 × MAD)', get: sv('mad'), fmt: '0.000', width: 12 },
+          { label: 'Far from the rest', get: function (r) { return r.far.length; }, fmt: '0', width: 9 },
+          { label: 'Which', get: function (r) { return r.far.map(function (p) { return p.run.name; }).join(', '); }, width: 40 }]) };
+    var values = { name: lr ? 'log2 ratios' : 'Values', rows: Mo.items, note: [(lr ? 'Each sample’s log2 ratio to the reference (' + A.refLabel() + '); new: not in the reference; lost: not in the sample' : 'Each sample’s value') + ', as plotted (MuroSense)'],
+      cols: [{ label: what, get: function (I) { return I.it.label; }, width: 30 }].concat(Mo.runs.map(function (r, i) {
+        return { label: r.name + (r.group ? ' [' + r.group + ']' : ''), fmt: '0.000', width: 13, get: function (I) { var p = I.pts[i]; return !p ? null : p.fl ? p.fl : p.x; } };
+      })) };
+    var H = distHits(Mo);
+    var hits = { name: 'Far from the rest', rows: H, note: ['Samples ' + (DV_RULE[dv.hits] || '') + (lr ? ', and samples with a species or metric the reference has none of (or the reverse)' : '') + ', farthest first (MuroSense)'],
+      cols: [{ label: 'Sample', get: function (x) { return x.p.run.name; }, width: 24 }].concat(split ? [{ label: 'Group', get: function (x) { return x.D.g.name; }, width: 14 }] : [])
+        .concat([{ label: what, get: function (x) { return x.it.label; }, width: 30 }, { label: 'Value', get: function (x) { return x.p.v; }, fmt: '0.000', width: 11 }])
+        .concat(lr ? [{ label: 'Reference', get: function (x) { return x.it.ref; }, fmt: '0.000', width: 11 }, { label: 'log2 ratio', get: function (x) { return x.p.fl ? x.p.fl : x.p.x; }, fmt: '0.000', width: 10 }] : [])
+        .concat([{ label: 'Median of the samples', get: function (x) { return x.D.S.med; }, fmt: '0.000', width: 12 }, { label: 'How far', get: function (x) { return dvFarText(x.p); }, width: 30 }]) };
+    return [summary, hits, values];
+  }
+  function renderDist() {
+    if (skip('dist')) return;
+    var box = boxes.dist; UI.clear(box);
+    var runs = distRuns(), card = h('div', { class: 'card' });
+    box.appendChild(card);
+    var head = h('div', { class: 'card-h' }, h('div', null, h('h3', null, 'Distributions'),
+      h('div', { class: 'small muted' }, 'Violin plots: every sample a dot, over the spread of all of them · samples far from the rest are named · click a dot to follow that sample in every panel')));
+    card.appendChild(head);
+    if (runs.length < 2) { card.appendChild(h('div', { class: 'empty' }, 'Tick two or more samples for the distributions.')); return; }
+    var R = refCol();
+    if (!R && dv.axis === 'lr') dv.axis = 'value';
+    var Mo = distModel(runs), isM = Mo.isM;
+    var whatSeg = segBtns([['metrics', 'Profile metrics'], ['species', 'Species']], dv.what, function (v) { dv.what = v; UI.store.set('dvWhat', v); renderDist(); }, 'Panels');
+    var axisSeg = segBtns((R ? [['lr', 'Ratio to reference', 'log₂ of each sample’s value over the reference’s (' + A.refLabel() + '): one axis for every panel']] : [])
+      .concat([['value', 'Values', 'Each panel its own axis, in its own unit']]), Mo.lr ? 'lr' : 'value', function (v) { dv.axis = v; UI.store.set('dvAxis', v); renderDist(); }, 'Axis');
+    var hitSel = h('select', { class: 'input', style: { width: 'auto' }, 'aria-label': 'Which samples to name', title: 'Which samples count as far from the rest (from ' + DV_MIN + ' samples in a distribution)',
+      onchange: function () { dv.hits = hitSel.value; UI.store.set('dvHits', dv.hits); renderDist(); } },
+      [['mad', '3 robust SDs (MAD)'], ['iqr', '1.5 × IQR (Tukey)'], ['none', 'none']].map(function (o) { return h('option', { value: o[0], selected: dv.hits === o[0] }, o[1]); }));
+    var hiSel = h('select', { class: 'input', style: { width: 'auto', 'max-width': '220px' }, 'aria-label': 'Follow a sample',
+      onchange: function () { dv.hi = hiSel.value || null; drawFig(); } },
+      [h('option', { value: '' }, '— none —')].concat(runs.map(function (r) { return h('option', { value: r.id, selected: dv.hi === r.id }, r.name); })));
+    var sameIn = Mo.lr ? h('input', { type: 'checkbox', checked: dv.same, onchange: function () { dv.same = sameIn.checked; UI.store.set('dvSame', dv.same); renderDist(); } }) : null;
+    var splitIn = hasGroups(runs) ? h('input', { type: 'checkbox', checked: dv.split, onchange: function () { dv.split = splitIn.checked; UI.store.set('dvSplit', dv.split); renderDist(); } }) : null;
+    head.appendChild(h('div', { class: 'row', style: { gap: '6px', 'flex-wrap': 'wrap' } },
+      h('button', { class: 'btn sm', onclick: function () { heatChooser(runs, isM); }, title: 'Choose the ' + (isM ? 'metrics' : 'species') + ' to show (the heat map shows the same)' }, UI.icon('list'), 'Choose ' + (isM ? 'metrics' : 'species') + '…'),
+      h('button', { class: 'btn sm', onclick: function () { saveDist('svg'); } }, UI.icon('download'), 'SVG'),
+      h('button', { class: 'btn sm', onclick: function () { saveDist('png'); } }, UI.icon('download'), 'PNG'),
+      h('button', { class: 'btn sm', title: 'The spread of each panel, the samples far from the rest and the values plotted, as an Excel workbook',
+        onclick: function () { UI.dl.saveTable(distSheets(distModel(distRuns())), 'MuroSense_violins_' + (dv.what === 'metrics' ? 'metrics' : 'species')); } }, UI.icon('download'), 'Excel')));
+    card.appendChild(h('div', { class: 'filters' }, whatSeg, h('span', { class: 'row small muted', style: { gap: '6px' } }, 'Axis', axisSeg),
+      sameIn ? h('label', { class: 'check small', title: 'Every panel on the same log₂ scale (the largest needed), so their spreads compare directly; otherwise each panel is scaled to its own data' }, sameIn, ' one scale') : null,
+      h('label', { class: 'row small muted', style: { gap: '6px' } }, 'Name samples beyond', hitSel),
+      splitIn ? h('label', { class: 'check small', title: 'One violin per group in each panel; the samples in no group together' }, splitIn, ' by group') : null,
+      h('label', { class: 'row small muted', style: { gap: '6px' } }, 'Follow', hiSel),
+      h('span', { class: 'small muted' }, Mo.items.length + ' of ' + Mo.all.length + ' ' + (isM ? 'metrics' : 'species') + ' · ' + UI.plural(runs.length, 'sample'))));
+    var fig = h('div', { class: 'dist-fig' }), hitsBox = h('div', { class: 'stack', style: { gap: '8px' } });
+    function drawFig() {
+      if (!Mo.items.length) { fig.innerHTML = ''; fig.appendChild(h('div', { class: 'empty' }, 'No ' + (isM ? 'metric' : 'species') + ' chosen. Use Choose… to add some.')); return; }
+      fig.innerHTML = distSVG(Mo, { cols: distCols(Mo.groups.length) }).svg;
+      hiSel.value = dv.hi || '';
+    }
+    fig.addEventListener('click', function (e) {
+      var t = e.target && e.target.closest ? e.target.closest('[data-run]') : null;
+      if (!t) return;
+      var id = t.getAttribute('data-run');
+      dv.hi = dv.hi === id ? null : id;
+      drawFig();
+    });
+    drawFig();
+    /* the samples far from the rest: the most often first, then a table */
+    var H = distHits(Mo);
+    if (dv.hits !== 'none') {
+      var per = {}, order = [];
+      H.forEach(function (x) { var id = x.p.run.id; if (!per[id]) { per[id] = { run: x.p.run, n: 0 }; order.push(per[id]); } per[id].n++; });
+      order.sort(function (a, b) { return b.n - a.n; });
+      var follow = function (id) { return function () { dv.hi = id; drawFig(); fig.scrollIntoView({ block: 'nearest' }); }; };
+      hitsBox.appendChild(h('h4', null, 'Far from the rest (' + H.length + ')'));
+      if (!H.length) hitsBox.appendChild(h('p', { class: 'small muted' }, 'No sample is far from the rest under this rule' + (Mo.groups.some(function (g) { return g.idx.length < DV_MIN; }) ? ' (a distribution needs ' + DV_MIN + ' samples to judge).' : '.')));
+      else {
+        hitsBox.appendChild(h('p', { class: 'small' }, 'Most often: ', order.slice(0, 10).map(function (o, i) {
+          return [i ? ', ' : '', h('button', { class: 'linkish', type: 'button', onclick: follow(o.run.id), title: 'Follow ' + o.run.name + ' in every panel' }, o.run.name), ' (' + o.n + ')'];
+        })));
+        var split = Mo.groups.length > 1;
+        var tb = h('tbody', null, H.slice(0, 80).map(function (x) {
+          var p = x.p, it = x.it;
+          return h('tr', null, h('td', null, h('button', { class: 'linkish', type: 'button', onclick: follow(p.run.id) }, p.run.name)),
+            split ? h('td', null, x.D.g.name) : null, h('td', null, it.label),
+            h('td', { class: 'num', 'data-v': String(p.v) }, dvVal(it, p.v, isM)),
+            Mo.lr ? h('td', { class: 'num', 'data-v': it.ref === null || it.ref === undefined ? '' : String(it.ref) }, dvVal(it, it.ref, isM)) : null,
+            Mo.lr ? h('td', { class: 'num', 'data-v': p.fl ? p.fl : String(p.x) }, p.fl ? p.fl : UI.signed(p.x, 2)) : null,
+            h('td', { class: 'small' }, dvFarText(p)));
+        }));
+        hitsBox.appendChild(h('div', { class: 'tbl-wrap', style: { 'max-height': '46vh' } }, h('table', { class: 'tbl' },
+          h('thead', null, h('tr', null, h('th', null, 'Sample'), split ? h('th', null, 'Group') : null, h('th', null, isM ? 'Metric' : 'Species'), h('th', { class: 'num' }, 'Value'),
+            Mo.lr ? h('th', { class: 'num' }, 'Reference') : null, Mo.lr ? h('th', { class: 'num', 'data-x': 'log2 ratio' }, 'log₂ ratio') : null, h('th', null, 'How far'))), tb)));
+        if (H.length > 80) hitsBox.appendChild(h('p', { class: 'small muted' }, 'The farthest 80 are listed; Excel has all ' + H.length + '.'));
+      }
+    }
+    card.appendChild(h('div', { class: 'card-b stack', style: { gap: '10px' } }, fig, hitsBox,
+      h('p', { class: 'note' }, 'Each panel shows how one ' + (isM ? 'metric' : 'species') + ' spreads across the samples. With one sample per strain (a screen) the violin is the spread of the collection, not of replicates: its body is the typical strain and its tails the strains that stand out. ' +
+        'The violin is a kernel density estimate (Gaussian kernel, Silverman’s bandwidth), drawn over the range of the data and only from ' + DV_MIN + ' samples on; the box is the middle half of the samples (first to third quartile), the bar the median, the line the range. ' +
+        (Mo.lr ? 'Against the reference (◆, ' + A.refLabel() + ') the axis is log₂ of the sample’s value over the reference’s, +1 twice as much, −1 half, each panel scaled to its own data (one scale puts every panel on the same one); a triangle marks a sample beyond the axis, or a value in only one of the sample and the reference (▲ not in the reference, ▼ not in the sample), left out of the violin and its statistics. ' :
+          'Each panel has its own axis, in its unit. ') +
+        (dv.hits === 'none' ? '' : 'Named: samples ' + DV_RULE[dv.hits] + (dv.hits === 'mad' ? ' (a robust SD is 1.4826 × the median absolute deviation; when half the samples are alike, 1.2533 × the mean absolute deviation)' : '') + ', judged within each violin; the farthest ' + DV_LABELS + ' are named in each panel, all of them in the list and in Excel. ') +
+        'The panels are those chosen for the heat map (Choose… changes both).')));
   }
 
   function exportX(runs) {
@@ -29678,9 +30221,9 @@ APP.views.guide = (function () {
 
     body.appendChild(sec('compare', 'Comparing samples', [
       p('Compare takes the runs ticked under Samples. Every section and export follows one order, yours: drag a sample’s chip to move it, or open ', h('i', null, 'Samples…'), '. Clicking a metric in the metric table orders the samples by it for a while; ', h('i', null, 'Back to your order'), ' returns to yours.'),
-      p('The results sit under tabs that stay at the top while the page scrolls: ', h('i', null, 'Quality'), ', ', h('i', null, 'Chromatograms'), ', ', h('i', null, 'Total PG'), ', ', h('i', null, 'Profile metrics'), ' (the table and At a glance), ', h('i', null, 'Heat map'), ', ', h('i', null, 'Species'), ' and ', h('i', null, 'Unexplained'), ', or ', h('i', null, 'All'), ' for every section one under another. A section is drawn when its tab opens, so many samples stay quick; the tab last used is remembered.'),
+      p('The results sit under tabs that stay at the top while the page scrolls: ', h('i', null, 'Quality'), ', ', h('i', null, 'Chromatograms'), ', ', h('i', null, 'Total PG'), ', ', h('i', null, 'Profile metrics'), ' (the table and At a glance), ', h('i', null, 'Heat map'), ', ', h('i', null, 'Distributions'), ', ', h('i', null, 'Species'), ' and ', h('i', null, 'Unexplained'), ', or ', h('i', null, 'All'), ' for every section one under another. A section is drawn when its tab opens, so many samples stay quick; the tab last used is remembered.'),
       li([
-        [h('b', null, 'Samples, groups and the reference. '), h('i', null, 'Samples…'), ' lists every sample with its original (file) name, the name to use, and its group. Rows move by their handle or the arrows, or all at once by name (2 before 10), by group, in reverse or as added. ', h('i', null, 'Shorten names'), ' drops what all the file names share (a date, a project prefix). Samples in one group are replicates of a strain or condition. The ', h('i', null, 'Reference'), ' (here or above the chips) is one sample, or the mean of one group, that the others are compared with. With groups, ', h('i', null, 'Columns: Group means'), ' shows one column per group, the mean of its samples ± their standard deviation, in the tables, the charts, the heat map and Total PG; samples outside a group stay on their own. Names, groups, order and reference are saved with the session.'],
+        [h('b', null, 'Samples, groups and the reference. '), h('i', null, 'Samples…'), ' lists every sample with its original (file) name, the name to use, and its group. Rows move by their handle or the arrows, or all at once by name (2 before 10), by group, in reverse or as added. ', h('i', null, 'Shorten names'), ' drops what all the file names share (a date, a project prefix). Names and groups can be pasted many at once: copy cells in Excel (or lines in a text file) and paste them into a name or group box, and they fill that box and the ones below it, in the order shown (two columns pasted into a name box give name and group; an empty name leaves the name as it is, an empty group means no group). A table whose first column holds the original (file) names is matched by name instead, in any order: original name, name, group; with two such columns, a second column of few repeated values is read as the group. A first line of headings (Original name, Name, Group, in any order) says which column is which. ', h('i', null, 'Paste names and groups from Excel or a text file'), ' takes a whole table with a preview of what it will change, and ', h('i', null, 'Copy as table'), ' gives the list (original name, name, group) to edit in a spreadsheet and paste back. Nothing changes until Apply. Samples in one group are replicates of a strain or condition. The ', h('i', null, 'Reference'), ' (here or above the chips) is one sample, or the mean of one group, that the others are compared with. With groups, ', h('i', null, 'Columns: Group means'), ' shows one column per group, the mean of its samples ± their standard deviation, in the tables, the charts, the heat map and Total PG; samples outside a group stay on their own. Names, groups, order and reference are saved with the session.'],
         [h('b', null, 'Quality checklist. '), 'One row per sample, to look at before drawing conclusions from it: mass accuracy after calibration, the share of the muropeptide-like signal explained, contaminants, species found and peak width (against the median sample), the UV signal-to-noise and how much of the UV the identified species explain, total PG (against the reference or the median), detector saturation, reduction, and the retention-time shift against the reference. A green dot is good, amber worth a look, red poor; hover a heading for its thresholds. The worst check gives the overall grade, and the score weighs good as 1 and check as ½. A sample’s name opens its Quality tab in Analyse, where the same checklist heads the evidence. Click a heading to sort on that check: worst first, again for best first, a third time for your order (sorting orders this table only). The tick box before each name leaves the sample out of every other section and the exports, as unticking its chip does; the sample stays in the checklist, dimmed, to tick again. The box in the heading ticks or unticks every sample listed (with ', h('i', null, 'To check'), ', every sample to check), so poor samples can be left out together.'],
         [h('b', null, 'Stacked chromatograms. '), 'Each sample’s trace (UV, base peak or TIC) sits on its own y axis, relative to its tallest peak or, with one scale, to the tallest of all. Species found in every sample are named in black; with Show differences, species missing from some are named in red. ', h('i', null, 'Mark peaks'), ' draws a shaded band or a thin line down the stack where each named species elutes; ', h('i', null, 'Colour by'), ' sets their colour: by presence (the default: grey in every sample, red missing from some), by oligomer (monomer, dimer, trimer, ≥ tetramer) or stem length (tri, tetra, penta, mixed), as in the profile metrics, or by one feature (anhydro ends, 4-3 or 3-3 cross-links, Lpp remnant, amidation, de-N-acetylation, O-acetylation, Gly at position 4 or 5, a non-canonical amino acid, cross-bridge), coloured with it and grey without; a legend beside the caption names the colours, in saved figures too. ', h('i', null, 'Names'), ' puts the structures above the stack, over each sample’s own peaks, or nowhere. Many samples scroll in a window between the names and the time axis, which stay in place; ', h('i', null, 'Trace height'), ' sets how tall each trace is, and ', h('i', null, 'all at full length'), ' shows them all at once. Click a sample’s name to hide it from the figure (it stays in the tables); hidden samples are listed above the figure, each a click from coming back, with ', h('i', null, 'Unhide all'), '.'],
         [h('b', null, 'Retention times. '), 'Each sample elutes a little earlier or later. Peaks are matched across the samples by composition and retention time: rows of one composition within ± the matching window (0.3 min unless changed) are one species, so isomers that elute apart are named apart. Each sample keeps its own peak times: a band or line bends through each sample’s own peak (or where it would be, in a sample without it), names over the peaks sit on each sample’s own peaks, and names above the stack sit at the mean time. Matching first allows for each sample’s overall shift against the reference, the median shift of the big peaks (0.5% or more) they share; ', h('i', null, 'align times'), ' also moves each trace by it, so the same peaks line up, and writes the shift under each name. A sample sharing fewer than three big peaks with the reference (another organism, another gradient) is not moved.'],
@@ -29689,6 +30232,7 @@ APP.views.guide = (function () {
         [h('b', null, 'Total PG. '), 'How much peptidoglycan each sample gave, from the UV: the summed UV peak area of its identified muropeptides, in the absorbance units the file records, times minutes. At 205 nm the area follows the number of disaccharide-peptide units, so this is an amount of material, not a count of molecules, and it compares samples prepared and injected the same way. Beside it: the area of every UV peak in the muropeptide window, the share the identified species explain, and the percentage of the reference (or of the median sample without one). A sample below the threshold (50% unless changed) is flagged low. The chart shows the areas or the percentages, with the reference and the threshold as dashed lines; samples without UV show n/a.'],
         [h('b', null, 'Against the reference. '), 'With a reference chosen, the metric and species tables show each sample as its value, its difference from the reference (percentage points), or its ratio to it (1.00× is the same; for species, new where the reference lacks it, lost where only the reference has it). Cells are tinted red for more and blue for less, full at 4-fold, and the reference’s own values lead the table.'],
         [h('b', null, 'Heat maps. '), 'The profile metrics (with total PG) or the species, one column per sample and one row per metric or species. ', h('i', null, 'Choose…'), ' picks the rows, and × beside a row removes it. Colours: a z-score per row (blue below the mean, red above), each row from its lowest to its highest value, for species the % of signal on a linear or log scale (one blue ramp, darker for more; grey: not found), and, with a reference, the ratio to the reference (log₂, red more, blue less, full at 4-fold; the reference column is marked ◆) or, for species, the difference in percentage points. A ring marks a species new against the reference or lost. Rows and samples can be clustered (average linkage, with dendrograms), and values written in the cells. ', h('i', null, 'Colours'), ' changes the scheme: Blue – red (the default), Blue – orange (safe for colour-blind readers), Purple – green, Teal – brown, Viridis, Magma or Greys (for print); ', h('i', null, 'reverse'), ' swaps the high and the low colours. The colours named above are those of Blue – red. SVG or PNG save it in the light theme, in the scheme chosen.'],
+        [h('b', null, 'Distributions. '), 'Violin plots: one panel per metric (or species), every sample a dot over the shape of their spread, so a screen shows where wild type sits among the strains and which strains stand out. The violin is a kernel density estimate (Gaussian kernel, Silverman’s bandwidth), drawn over the range of the data and only from five samples on; the box marks the middle half of the samples (first to third quartile), the bar their median, the line their range; the reference is a diamond. ', h('i', null, 'Ratio to reference'), ' (the default when a reference is set) plots log₂ of each sample’s value over the reference’s, each panel scaled to its own data (', h('i', null, 'one scale'), ' puts all on the same axis); a triangle marks a sample beyond the axis, or a species in only one of the sample and the reference (▲ not in the reference, ▼ not in the sample), which stays out of the violin and its statistics. ', h('i', null, 'Values'), ' gives each panel its own axis, in its unit. Samples far from the rest are named: more than 3 robust SDs from the median (a robust SD is 1.4826 × the median absolute deviation, or 1.2533 × the mean absolute deviation when half the samples are alike), or, with Tukey’s rule, beyond 1.5 × the interquartile range past the quartiles; each violin is judged on its own, from five samples on. The farthest six in a panel are named beside it; the list under the figure has all of them, farthest first, and which samples are named most often. Click a dot (or choose under ', h('i', null, 'Follow'), ') to ring that sample in every panel. ', h('i', null, 'by group'), ' draws one violin per group, the samples in no group together. The panels are those chosen for the heat map. With one sample per strain, the violin is the spread of the collection, not of replicates. SVG and PNG save the figure in the light theme; Excel saves the statistics of each panel, the samples far from the rest and the values plotted.'],
         [h('b', null, 'Charts. '), 'At a glance and the species chart keep one group of bars per sample at a readable width; with many samples they scroll sideways and keep their value axis in view. Bar width widens them. With group means, whiskers show ± one standard deviation.'],
         [h('b', null, 'Tables and Excel. '), 'The metric and species tables are the exact values behind the charts and heat maps. Excel beside Samples saves the whole comparison in one workbook: the Samples sheet (original names, groups, the reference, total PG, quality), the quality checklist, total PG, the profile metrics, the group means with their SD, the metrics and species against the reference (difference and ratio), and the species matrices. Each section also saves on its own: Excel above a table saves that table as shown, and SVG or PNG above a chart that chart (see Saving).']])]));
 
