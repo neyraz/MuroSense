@@ -375,7 +375,34 @@ th.refcol, td.refcol { background: color-mix(in srgb, var(--accent) 7%, transpar
 .heat-fig svg { display: block; }
 .dist-fig { overflow: auto; border: 1px solid var(--line-2); border-radius: 6px; background: var(--panel); }
 .dist-fig svg { display: block; }
-.dist-fig [data-run] { cursor: pointer; }
+.dist-fig g[data-item] { cursor: zoom-in; outline: none; }
+.dist-fig g[data-item]:hover .dv-hit, .dist-fig g[data-item]:focus-visible .dv-hit { stroke: var(--accent); stroke-width: 1.5px; }
+.dv-tip { position: fixed; z-index: 95; display: none; max-width: 340px; padding: 6px 9px; border-radius: 6px; background: var(--ink); color: var(--bg);
+  font-size: 12px; line-height: 1.35; pointer-events: none; box-shadow: var(--shadow); }
+.modal-b > .dv-pop { flex: 1 1 auto; min-height: 0; }
+.dv-pop { display: grid; grid-template-columns: minmax(0, 1fr) 316px; grid-template-rows: minmax(0, 1fr); gap: 16px; align-items: start; }
+.dv-pop-figwrap { overflow: auto; max-height: 100%; border: 1px solid var(--line-2); border-radius: 6px; background: var(--panel-2); padding: 8px; }
+.dv-pop-fig svg { display: block; max-width: 100%; height: auto; margin: 0 auto; }
+.dv-pop-fig [data-run] { cursor: pointer; }
+.dist-fig circle[data-run]:hover, .dist-fig path[data-run]:hover, .dv-pop-fig circle[data-run]:hover, .dv-pop-fig path[data-run]:hover { stroke: #f28e2b !important; stroke-width: 2px !important; stroke-opacity: 1 !important; }
+.dv-ctl { max-height: 100%; overflow: auto; display: flex; flex-direction: column; gap: 14px; padding-right: 4px; }
+.dv-order { display: flex; flex-direction: column; gap: 3px; margin: 2px 0 8px; }
+.dv-ord { display: grid; grid-template-columns: 14px minmax(0, 1fr) auto; align-items: center; gap: 6px; padding: 2px 3px 2px 6px; border: 1px solid var(--line-2);
+  border-radius: 5px; background: var(--panel); font-size: 12.5px; cursor: grab; user-select: none; }
+.dv-ord.drag { opacity: .45; }
+.dv-ord.over { border-color: var(--accent); box-shadow: inset 0 2px 0 var(--accent); }
+.dv-ord .grip { color: var(--muted); font-size: 13px; line-height: 1; }
+.dv-ord .lab { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dv-ord .btns { display: flex; gap: 1px; }
+.dv-ord .btns .btn { padding: 1px 6px; min-height: 0; line-height: 1.3; }
+.dv-ctl-sec > select.input { width: 100%; }
+.dv-ctl-sec h4 { margin: 0 0 6px; font-size: 11.5px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); }
+.dv-ctl-row { display: grid; grid-template-columns: 112px minmax(0, 1fr); align-items: center; gap: 8px; margin: 5px 0; font-size: 12.5px; }
+.dv-ctl-row > span:first-child { color: var(--ink-2); }
+.dv-ctl-row select.input, .dv-ctl-row input[type=text] { width: 100%; }
+.dv-ctl-row input[type=range] { width: 100%; accent-color: var(--accent); }
+.dv-color { width: 44px; height: 26px; padding: 1px; border: 1px solid var(--line-2); border-radius: 4px; background: var(--panel); cursor: pointer; }
+@media (max-width: 760px) { .dv-pop { grid-template-columns: 1fr; grid-template-rows: none; } .modal-b > .dv-pop { flex: none; } .dv-ctl, .dv-pop-figwrap { max-height: none; } }
 .hm-pick { display: grid; gap: 1px; align-content: start; }
 .hm-item { padding: 3px 4px; border-radius: 5px; align-items: baseline; }
 .hm-item:hover { background: var(--sunk); }
@@ -521,7 +548,7 @@ th.refcol, td.refcol { background: color-mix(in srgb, var(--accent) 7%, transpar
 .hint { font-size: 12px; color: var(--ink-2); }
 .toast {
   position: fixed; left: 50%; bottom: calc(18px + env(safe-area-inset-bottom, 0px)); transform: translateX(-50%) translateY(20px);
-  background: var(--ink); color: var(--bg); padding: 8px 14px; border-radius: 8px; font-size: 13px; opacity: 0; transition: .2s; z-index: 60;
+  background: var(--ink); color: var(--bg); padding: 8px 14px; border-radius: 8px; font-size: 13px; opacity: 0; transition: .2s; z-index: 90;
   max-width: calc(100vw - 32px); pointer-events: none;
 }
 .toast.on { opacity: 1; transform: translateX(-50%); }
@@ -22583,7 +22610,7 @@ var APP = (function () {
   var LABELS = { home: 'Home', analyse: 'Analyse', compare: 'Compare', structure: 'Structure', library: 'Library', guide: 'Guide' };
   var DEFAULT_SETTINGS = { profile: 'auto', reduction: 'auto', fdr: 0.01, maxOligomer: '', tol: 'auto', ms2: true, uv: true, rt0: '', rt1: '', focused: true, refs: true,
                            autoLibs: false, polarity: 'auto' };
-  var NAME = 'MuroSense', VERSION = '3.22';
+  var NAME = 'MuroSense', VERSION = '3.24';
 
   var A = {
     NAME: NAME, VERSION: VERSION, runs: [], current: null, view: 'home', views: {},
@@ -27565,7 +27592,10 @@ APP.views.compare = (function () {
     var med = qtl(s, 0.5), dev = s.map(function (x) { return Math.abs(x - med); }).sort(function (a, b) { return a - b; });
     var mad = 1.4826 * qtl(dev, 0.5);
     if (!(mad > 1e-12)) mad = 1.2533 * dev.reduce(function (a, b) { return a + b; }, 0) / n;
-    return { n: n, mean: mean, sd: sd, med: med, q1: qtl(s, 0.25), q3: qtl(s, 0.75), min: s[0], max: s[n - 1], mad: mad };
+    var q1 = qtl(s, 0.25), q3 = qtl(s, 0.75), fl = q1 - 1.5 * (q3 - q1), fh = q3 + 1.5 * (q3 - q1), eps = 1e-12 * (Math.abs(med) + 1), lowAdj = s[0], highAdj = s[n - 1], j;
+    for (j = 0; j < n; j++) if (s[j] >= fl - eps) { lowAdj = s[j]; break; }
+    for (j = n - 1; j >= 0; j--) if (s[j] <= fh + eps) { highAdj = s[j]; break; }
+    return { n: n, mean: mean, sd: sd, med: med, q1: q1, q3: q3, min: s[0], max: s[n - 1], mad: mad, lowAdj: lowAdj, highAdj: highAdj };
   }
   /* how far a value lies from the rest, under the rule chosen: 0 when it
      does not, else the distance (robust SDs, or IQRs from the median) */
@@ -27580,19 +27610,25 @@ APP.views.compare = (function () {
     var z = Math.abs(x - S.med) / S.mad;
     return z > 3 ? z : 0;
   }
-  function dvKde(xs, S) {
-    if (xs.length < DV_MIN || !(S.max > S.min)) return null;
+  /* the shape of a violin: a Gaussian kernel density with Silverman's
+     bandwidth, over the data, or (cut) that many bandwidths past it, as
+     seaborn draws it; never below 0 for values that cannot be */
+  function dvKde(xs, S, cut, clip0) {
+    if (xs.length < 3 || !(S.max > S.min)) return null;
     var iqr = S.q3 - S.q1, spread = iqr > 0 ? Math.min(S.sd, iqr / 1.34) : S.sd;
     if (!(spread > 0)) return null;
-    var bw = 0.9 * spread * Math.pow(xs.length, -0.2), N = 50, pts = [], mx = 0, k;
+    var bw = 0.9 * spread * Math.pow(xs.length, -0.2), N = 64, pts = [], mx = 0, k;
+    var a = S.min - (cut || 0) * bw, b = S.max + (cut || 0) * bw;
+    if (clip0 && a < 0) a = Math.min(0, S.min);
     function d(y) { var t = 0; xs.forEach(function (x) { var u = (y - x) / bw; t += Math.exp(-0.5 * u * u); }); return t; }
-    for (k = 0; k <= N; k++) { var y = S.min + (S.max - S.min) * k / N, v = d(y); pts.push([y, v]); if (v > mx) mx = v; }
+    for (k = 0; k <= N; k++) { var y = a + (b - a) * k / N, v = d(y); pts.push([y, v]); if (v > mx) mx = v; }
     return { pts: pts, mx: mx, bw: bw, at: function (y) { return mx > 0 ? d(y) / mx : 0; } };
   }
   /* a steady spread of the dots across a violin: each sample its own place */
   function hash01(s) { var x = 2166136261; s = String(s); for (var i = 0; i < s.length; i++) { x ^= s.charCodeAt(i); x = Math.imul(x, 16777619); } return ((x >>> 0) % 10007) / 10007; }
   function distRuns() { return chosen().filter(function (r) { return !chartOff[r.id]; }); }
-  function distModel(runs) {
+  /* rows: the metrics (or species) to model, when not those chosen for the grid */
+  function distModel(runs, rows) {
     var isM = dv.what === 'metrics', P = pickedItems(runs, isM), R = refCol(), lr = dv.axis === 'lr' && !!R;
     var refIds = {};
     runs.forEach(function (r) { if (isRefCol(r) || (A.ref && A.ref.group && r.group === A.ref.group)) refIds[r.id] = true; });
@@ -27612,7 +27648,7 @@ APP.views.compare = (function () {
     /* the axis around 0 for log2 ratios: the panel's own (or, one scale, the
        largest of all), from ±0.5 to ±5 (32-fold); beyond it, a triangle */
     function limOf(m) { return Math.min(DV_LIM, Math.max(0.5, Math.ceil(m * 1.1 * 4) / 4)); }
-    var items = P.rows.map(function (it) {
+    var items = (rows || P.rows).map(function (it) {
       var mAbs = 0;
       var pts = runs.map(function (r, i) {
         var v = it.vals[i];
@@ -27631,7 +27667,7 @@ APP.views.compare = (function () {
         var xs = ps.filter(function (p) { return !p.fl; }).map(function (p) { return p.x; });
         var S = dstats(xs);
         ps.forEach(function (p) { p.far = p.fl ? (dv.hits === 'none' ? 0 : 1e9) : dvFar(S, p.x); });
-        return { g: g, ps: ps, S: S, K: dvKde(xs, S) };
+        return { g: g, ps: ps, S: S, xs: xs };
       });
       return { it: it, pts: pts, dists: dists, lim: lr ? limOf(mAbs) : null };
     });
@@ -27652,169 +27688,667 @@ APP.views.compare = (function () {
     if (p.far >= 1e9) return 'outside the fences (the quartiles alike)';
     return p.far.toFixed(1) + (dv.hits === 'iqr' ? ' IQR' : ' robust SD') + ' from the median';
   }
-  /* the width of one panel: the axis, a slot per distribution, and (one
-     distribution) a column for the names */
-  function dvPanelW(nG) { return 42 + nG * (nG > 1 ? 58 : 92) + (nG > 1 ? 0 : 86) + 14; }
-  /* a label in at most two lines */
-  function wrap2(t, px, wt, maxW) {
-    var words = String(t).split(' '), l1 = '', i = 0;
-    for (; i < words.length; i++) { var c = l1 ? l1 + ' ' + words[i] : words[i]; if (l1 && measureText(c, px, wt) > maxW) break; l1 = c; }
-    var rest = words.slice(i).join(' ');
-    if (!rest) return [fitText(l1, px, wt, maxW)];
-    return [l1, fitText(rest, px, wt, maxW)];
+  /* ---- the look of the plots: a theme, a palette, fonts ----
+     A theme sets the background, the frame, the grid and how the shapes are
+     drawn; a palette their colours (one per group, or one per panel). The
+     look can be changed for every plot, or for one in its own window, and
+     that one's look given to all. */
+  var DV_PALS = [
+    ['deep', 'Deep', ['#4c72b0', '#dd8452', '#55a868', '#c44e52', '#8172b3', '#937860', '#da8bc3', '#8c8c8c', '#ccb974', '#64b5cd']],
+    ['muted', 'Muted', ['#4878d0', '#ee854a', '#6acc64', '#d65f5f', '#956cb4', '#8c613c', '#dc7ec0', '#797979', '#d5bb67', '#82c6e2']],
+    ['pastel', 'Pastel', ['#a1c9f4', '#ffb482', '#8de5a1', '#ff9f9b', '#d0bbff', '#debb9b', '#fab0e4', '#cfcfcf', '#fffea3', '#b9f2f0']],
+    ['bright', 'Bright', ['#023eff', '#ff7c00', '#1ac938', '#e8000b', '#8b2be2', '#9f4800', '#f14cc1', '#a3a3a3', '#ffc400', '#00d7ff']],
+    ['tab10', 'Tableau 10', ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', '#8c564b', '#e377c2', '#7f7f7f', '#bcbd22', '#17becf']],
+    ['colorblind', 'Colour-blind safe', ['#0072b2', '#e69f00', '#009e73', '#d55e00', '#cc79a7', '#56b4e9', '#f0e442', '#999999']],
+    ['set2', 'Soft (Set 2)', ['#66c2a5', '#fc8d62', '#8da0cb', '#e78ac3', '#a6d854', '#ffd92f', '#e5c494', '#b3b3b3']],
+    ['sunny', 'Orange and green', ['#f8b62d', '#a3d468', '#f08a4b', '#6cc4a4', '#e8c547', '#8fb8de', '#d98cb3', '#b5b5b5']],
+    ['coolwarm', 'Cool to warm (graded)', null, ['#3b4cc0', '#8db0fe', '#dddddd', '#f4987a', '#b40426']],
+    ['viridis', 'Viridis (graded)', null, ['#440154', '#3b528b', '#21918c', '#5ec962', '#fde725']],
+    ['groups', 'Group colours (as in the app)'],
+    ['one', 'One colour']];
+  var DV_THEMES = {
+    ticks: { name: 'Classic', bg: '#ffffff', plotBg: '#ffffff', grid: false, gridColor: '#e6e6e6', frame: 'box', frameColor: '#262626', ink: '#262626',
+             outline: 'dark', outlineColor: '#3d3d3d', alpha: 1, innerColor: '#3d3d3d', medianColor: '#ffffff', ptColor: 'dark' },
+    whitegrid: { name: 'White grid', bg: '#ffffff', plotBg: '#ffffff', grid: true, gridColor: '#dcdcdc', frame: 'box', frameColor: '#cccccc', ink: '#404040',
+             outline: 'dark', outlineColor: '#666666', alpha: 1, innerColor: '#666666', medianColor: '#ffffff', ptColor: 'dark' },
+    clean: { name: 'Clean', bg: '#ffffff', plotBg: '#ffffff', grid: false, gridColor: '#eeeeee', frame: 'axes', frameColor: '#1a1a1a', ink: '#1a1a1a',
+             outline: 'fill', outlineColor: '#333333', alpha: 0.9, innerColor: 'shade', medianColor: '#ffffff', ptColor: 'dark' },
+    darkgrid: { name: 'Grey panel', bg: '#ffffff', plotBg: '#eaeaf2', grid: true, gridColor: '#ffffff', frame: 'none', frameColor: '#262626', ink: '#262626',
+             outline: 'dark', outlineColor: '#3d3d3d', alpha: 1, innerColor: '#3d3d3d', medianColor: '#ffffff', ptColor: 'dark' },
+    dark: { name: 'Dark (for slides)', bg: '#16191d', plotBg: '#16191d', grid: true, gridColor: '#2c3138', frame: 'axes', frameColor: '#9aa3ad', ink: '#e8eaed',
+             outline: 'fill', outlineColor: '#e8eaed', alpha: 0.9, innerColor: '#0b0d10', medianColor: '#ffffff', ptColor: 'light' },
+    app: { name: 'App (light or dark)', bg: '--panel', plotBg: '--panel', grid: true, gridColor: '--line', frame: 'axes', frameColor: '--ink-2', ink: '--ink',
+             outline: 'fill', outlineColor: '--ink-2', alpha: 0.3, innerColor: '--ink-2', medianColor: '--panel', ptColor: 'app' } };
+  var DV_THEME_KEYS = ['bg', 'plotBg', 'grid', 'gridColor', 'frame', 'frameColor', 'ink', 'outline', 'outlineColor', 'alpha', 'innerColor', 'medianColor', 'ptColor'];
+  var DV_FONTS = [['arial', 'Arial', 'Arial, Helvetica, sans-serif'], ['helvetica', 'Helvetica', 'Helvetica, Arial, sans-serif'], ['calibri', 'Calibri', 'Calibri, Carlito, Arial, sans-serif'],
+    ['app', 'IBM Plex Sans (the app’s)', null], ['times', 'Times New Roman', '“Times New Roman”, Times, serif'], ['georgia', 'Georgia', 'Georgia, serif'], ['courier', 'Courier New', '“Courier New”, Courier, monospace']];
+  function fontOf(k) { var f = DV_FONTS.filter(function (x) { return x[0] === k; })[0] || DV_FONTS[0]; return (f[2] || UI.css('--sans') || 'sans-serif').replace(/[“”]/g, '"'); }
+  var DV_STYLE0 = { theme: 'ticks', kind: 'violin', palette: 'deep', color: '#4c72b0', colorBy: 'panel', inner: 'box', shape: 'smooth', points: 'all', ptSize: 2.6,
+    width: 0.8, lineW: 1.1, minN: 5, font: 'arial', titleSize: 13, titleBold: true, axisSize: 12, axisBold: false, tickSize: 11, tickBold: false,
+    labelSize: 10, labelBold: false, autoNames: true, axisTitles: false };
+  function withTheme(s, key) {
+    var T0 = DV_THEMES[key] || DV_THEMES.ticks, o = Object.assign({}, s);
+    DV_THEME_KEYS.forEach(function (k) { o[k] = T0[k]; });
+    o.theme = DV_THEMES[key] ? key : 'ticks';
+    return o;
   }
+  dv.style = Object.assign(withTheme(DV_STYLE0, 'ticks'), UI.store.get('dvStyle', {}) || {});
+  dv.pstyle = {}; dv.ptext = {}; dv.plab = {};
+  function saveStyle() { UI.store.set('dvStyle', dv.style); }
+  /* colours: a CSS variable (the app theme) or a colour; mixed for shades */
+  var dvCtx = null;
+  function rgbOf(c) {
+    if (c && c.indexOf('--') === 0) c = UI.css(c) || '#888888';
+    if (!dvCtx) dvCtx = document.createElement('canvas').getContext('2d');
+    dvCtx.fillStyle = '#000000'; dvCtx.fillStyle = c || '#888888';
+    var v = dvCtx.fillStyle;
+    if (v.charAt(0) === '#') return [parseInt(v.slice(1, 3), 16), parseInt(v.slice(3, 5), 16), parseInt(v.slice(5, 7), 16)];
+    var m = v.match(/[\d.]+/g); return m ? [+m[0], +m[1], +m[2]] : [136, 136, 136];
+  }
+  function solid(c) { return c && c.indexOf('--') === 0 ? (UI.css(c) || '#4c72b0') : (c || '#4c72b0'); }
+  function hexOf(c) { return '#' + rgbOf(c).map(function (x) { return ('0' + Math.round(x).toString(16)).slice(-2); }).join(''); }
+  function mixC(c, d, t) { var a = rgbOf(c), b = rgbOf(d); return '#' + [0, 1, 2].map(function (i) { return ('0' + Math.round(a[i] * (1 - t) + b[i] * t).toString(16)).slice(-2); }).join(''); }
+  function palColors(S, n, groupCols) {
+    var P = DV_PALS.filter(function (p) { return p[0] === S.palette; })[0] || DV_PALS[0];
+    if (P[0] === 'groups') return groupCols && groupCols.length ? groupCols : ['#4c72b0'];
+    if (P[0] === 'one') return [S.color || '#4c72b0'];
+    if (P[3]) { var out = []; for (var i = 0; i < Math.max(1, n); i++) out.push(ramp(P[3], n > 1 ? i / (n - 1) : 0.5)); return out; }
+    return P[2];
+  }
+  var mctx2 = null;
+  function measureF(t, px, wt, fam) {
+    try { if (!mctx2) mctx2 = document.createElement('canvas').getContext('2d'); mctx2.font = (wt || 400) + ' ' + px + 'px ' + fam; return mctx2.measureText(String(t)).width; }
+    catch (e) { return String(t).length * px * 0.58; }
+  }
+  function fitF(t, px, wt, fam, maxW) {
+    t = String(t);
+    if (measureF(t, px, wt, fam) <= maxW) return t;
+    var a = t;
+    while (a.length > 2 && measureF(a + '…', px, wt, fam) > maxW) a = a.slice(0, -1);
+    return a + '…';
+  }
+  function wrapF(t, px, wt, fam, maxW, maxLines) {
+    var words = String(t).split(' '), lines = [], cur = '';
+    words.forEach(function (w) { var c = cur ? cur + ' ' + w : w; if (cur && measureF(c, px, wt, fam) > maxW) { lines.push(cur); cur = w; } else cur = c; });
+    if (cur) lines.push(cur);
+    if (lines.length > maxLines) { var keep = lines.slice(0, maxLines); keep[maxLines - 1] = fitF(lines.slice(maxLines - 1).join(' '), px, wt, fam, maxW); lines = keep; }
+    return lines.map(function (l) { return fitF(l, px, wt, fam, maxW); });
+  }
+  function dvYlab(Mo, it) {
+    if (Mo.lr) return 'log₂ ratio to ' + A.refLabel();
+    if (it.area) return 'UV peak area';
+    if (Mo.isM) return it.len ? 'units per anhydro end' : '%';
+    return '% of identified ' + (basis === 'uv' ? 'UV' : 'MS') + ' signal';
+  }
+  /* which samples are named in a panel: the farthest (when names come by
+     themselves), and those clicked on; clicking a named one hides its name */
+  function namedIn(key, ps, S, max) {
+    var L = dv.plab[key] || { on: {}, off: {} }, out = {};
+    if (S.autoNames) ps.filter(function (p) { return p.far; }).sort(function (a, b) { return b.far - a.far; }).slice(0, max).forEach(function (p) { out[p.run.id] = true; });
+    Object.keys(L.on).forEach(function (id) { out[id] = true; });
+    Object.keys(L.off).forEach(function (id) { delete out[id]; });
+    return out;
+  }
+  function toggleName(key, id, wasNamed) {
+    var L = dv.plab[key] || (dv.plab[key] = { on: {}, off: {} });
+    if (wasNamed) { delete L.on[id]; L.off[id] = true; } else { delete L.off[id]; L.on[id] = true; }
+  }
+  /* One panel: a title, an axis, a violin or a box per distribution, the
+     samples as dots, names. G: its place ({ x, y, w, h }); o: { X (the
+     light theme, to save), k (its number), nPanels, big (its own window),
+     texts ({ title, ylab, xlab, cat }), cats (several metrics or species
+     side by side on one axis, each named under the plot), rot (how those
+     names stand: auto, flat, slant, up) } */
+  function vPanel(out, I, Mo, S, G, o) {
+    var X = !!o.X, esc = UI.esc, multi = !!o.cats, cats = o.cats || [I], it = cats[0].it, big = !!o.big;
+    var nC = cats.length, nG = cats[0].dists.length, split = nG > 1;
+    function C(v, fb) { if (!v) return fb; if (v.indexOf('--') === 0) return X ? (UI.css(v) || fb) : 'var(' + v + ')'; return v; }
+    function f1(v) { return (+v).toFixed(1); }
+    var fam = fontOf(S.font), ink = C(S.ink, '#262626');
+    function TX(x, y, t, size, bold, fill, extra) {
+      return '<text x="' + f1(x) + '" y="' + f1(y) + '" style="font-family:' + esc(fam) + ';font-size:' + size + 'px;font-weight:' + (bold ? 700 : 400) + ';fill:' + fill + '"' + (extra || '') + '>' + esc(t) + '</text>';
+    }
+    function keyOf(Ci) { return (multi ? 'combo|' : '') + Ci.it.key; }
+    var allPts = [];
+    cats.forEach(function (Ci) { Ci.pts.forEach(function (p) { if (p) allPts.push(p); }); });
+    var tx = o.texts || {};
+    var title = tx.title !== undefined ? tx.title : multi ? comboTitle(Mo) : it.label + (!Mo.lr && !big && dvUnit(it, Mo.isM) ? ' (' + dvUnit(it, Mo.isM) + ')' : '');
+    var ylab = tx.ylab !== undefined ? tx.ylab : multi ? comboYlab(Mo, cats) : dvYlab(Mo, it), xlab = tx.xlab || '', showAx = big || S.axisTitles || tx.ylab !== undefined;
+    var clip0 = !Mo.lr && allPts.every(function (p) { return p.x === null || p.x >= 0; });
+    /* every distribution in order: its metric (or species), its group */
+    var slots = [];
+    cats.forEach(function (Ci, ci) { Ci.dists.forEach(function (D, gi) { slots.push({ D: D, it: Ci.it, key: keyOf(Ci), ci: ci, gi: gi }); }); });
+    /* the shapes first, for the range they need */
+    var Ks = slots.map(function (sl) {
+      var D = sl.D;
+      if (S.kind !== 'violin' || D.xs.length < Math.max(3, S.minN)) return null;
+      return dvKde(D.xs, D.S, S.shape === 'smooth' ? 2 : 0, clip0);
+    });
+    var xsAll = allPts.filter(function (p) { return p.x !== null; }).map(function (p) { return p.x; });
+    var lo = xsAll.length ? Math.min.apply(null, xsAll) : 0, hi = xsAll.length ? Math.max.apply(null, xsAll) : 1;
+    Ks.forEach(function (K) { if (K) { lo = Math.min(lo, K.pts[0][0]); hi = Math.max(hi, K.pts[K.pts.length - 1][0]); } });
+    if (Mo.lr) {
+      var Lm = dv.same ? Mo.lim : Math.min(DV_LIM, Math.max(0.5, Math.ceil(Math.max(Math.abs(lo), Math.abs(hi)) * 1.08 * 4) / 4));
+      lo = -Lm; hi = Lm;
+    } else {
+      var pad = (hi - lo) * 0.06 || Math.abs(hi) * 0.1 || 1;
+      lo = clip0 && lo - pad < 0 ? 0 : lo - pad; hi += pad;
+    }
+    var areaAll = cats.every(function (Ci) { return Ci.it.area; });
+    var tk = UI.plot.ticks(lo, hi, big ? 6 : 4), stp = UI.plot.niceStep(hi - lo, big ? 6 : 4);
+    var tlab = tk.map(function (t) { return Mo.lr ? (Math.abs(t) < 1e-9 ? '0' : (t > 0 ? '+' : '−') + UI.plot.tickLabel(Math.abs(t), stp)) : (areaAll ? T.fmtArea(t) : UI.plot.tickLabel(t, stp)); });
+    /* the layout */
+    var pad0 = big ? 16 : 10, tW = S.tickBold ? 700 : 400;
+    var tl = title ? wrapF(title, S.titleSize, S.titleBold ? 700 : 400, fam, G.w - 2 * pad0, big ? 3 : 2) : [];
+    var th = tl.length ? tl.length * S.titleSize * 1.22 + 8 : 0;
+    var tickW = Math.max.apply(null, tlab.map(function (l) { return measureF(l, S.tickSize, tW, fam); }).concat([10])) + 8;
+    var ylW = showAx && ylab ? S.axisSize * 1.45 : 0;
+    /* one distribution: a column for the names at the right, inside the
+       frame (the shape in the middle when no sample is named) */
+    var named = cats.map(function (Ci) { return namedIn(keyOf(Ci), Ci.pts.filter(Boolean), S, multi ? 5 : big ? 20 : DV_LABELS); }), hiRun = dv.hi;
+    var hasNames = Object.keys(named[0]).length > 0 || (!!hiRun && allPts.some(function (p) { return p.run.id === hiRun; }));
+    var nameW = split || multi ? 0 : (big ? Math.min(240, Math.max(130, G.w * 0.28)) : 118);
+    var x0 = G.x + pad0 + ylW + tickW, xR = G.x + G.w - pad0, catH, legH = 0, rot = 0, catLines = null, catFs = S.tickSize;
+    if (multi) {
+      /* several side by side: their names under the plot, straight (and
+         wrapped), slanted or upright */
+      var catW0 = (xR - x0) / nC, labs = cats.map(function (Ci) { return Ci.it.label; });
+      rot = o.rot === 'slant' ? 45 : o.rot === 'up' ? 90 : o.rot === 'flat' ? 0 : -1;
+      if (rot < 0) rot = labs.every(function (l) { return wrapF(l, catFs, tW, fam, catW0 - 6, 9).length <= 2; }) ? 0 : 45;
+      if (rot === 0) {
+        catLines = labs.map(function (l) { return wrapF(l, catFs, tW, fam, Math.max(30, catW0 - 6), 3); });
+        catH = Math.max.apply(null, catLines.map(function (a) { return a.length; })) * catFs * 1.2 + 10;
+      } else {
+        var maxL = Math.max(60, Math.min(260, G.h * 0.34));
+        catLines = labs.map(function (l) { return [fitF(l, catFs, tW, fam, maxL)]; });
+        var mw = Math.max.apply(null, catLines.map(function (a) { return measureF(a[0], catFs, tW, fam); }));
+        if (rot === 45) {
+          catH = mw * 0.7071 + catFs * 1.4 + 8;
+          /* the first name, slanting to the left, stays in the picture */
+          var need = mw * 0.7071 - catW0 / 2 - (x0 - G.x) + pad0;
+          if (need > 0) x0 += need;
+        } else catH = mw + 14;
+      }
+      if (split) legH = S.tickSize * 1.8;
+    } else catH = S.tickSize * 1.35 + (split || big ? S.tickSize * 1.25 : 0) + 6;
+    var xlH = xlab ? S.axisSize * 1.6 : 0;
+    var x1 = xR - nameW, y0 = G.y + pad0 + th + legH, y1 = G.y + G.h - pad0 - catH - xlH;
+    if (x1 - x0 < 40) x1 = x0 + 40;
+    if (xR < x1) xR = x1;
+    if (y1 - y0 < 40) y1 = y0 + 40;
+    function Y(v) { return y1 - (Math.max(lo, Math.min(hi, v)) - lo) / (hi - lo) * (y1 - y0); }
+    /* background, grid, frame */
+    out.push('<rect x="' + f1(x0) + '" y="' + f1(y0) + '" width="' + f1(xR - x0) + '" height="' + f1(y1 - y0) + '" style="fill:' + C(S.plotBg, '#ffffff') + '"/>');
+    tl.forEach(function (l, j) { out.push(TX(G.x + pad0, G.y + pad0 + S.titleSize * (j + 1) * 1.22 - 2, l, S.titleSize, S.titleBold, ink)); });
+    var fc = C(S.frameColor, '#262626'), gc = C(S.gridColor, '#e6e6e6');
+    tk.forEach(function (t, i) {
+      var y = Y(t);
+      if (S.grid) out.push('<line x1="' + f1(x0) + '" x2="' + f1(xR) + '" y1="' + f1(y) + '" y2="' + f1(y) + '" style="stroke:' + gc + ';stroke-width:1"/>');
+      if (S.frame !== 'none') out.push('<line x1="' + f1(x0 - 4) + '" x2="' + f1(x0) + '" y1="' + f1(y) + '" y2="' + f1(y) + '" style="stroke:' + fc + ';stroke-width:1"/>');
+      out.push(TX(x0 - 7, y + S.tickSize * 0.35, tlab[i], S.tickSize, S.tickBold, ink, ' text-anchor="end"'));
+    });
+    if (Mo.lr) out.push('<line x1="' + f1(x0) + '" x2="' + f1(xR) + '" y1="' + f1(Y(0)) + '" y2="' + f1(Y(0)) + '" style="stroke:' + ink + ';stroke-width:1;stroke-dasharray:4 3;opacity:0.55"/>');
+    if (S.frame === 'box') out.push('<rect x="' + f1(x0) + '" y="' + f1(y0) + '" width="' + f1(xR - x0) + '" height="' + f1(y1 - y0) + '" style="fill:none;stroke:' + fc + ';stroke-width:1"/>');
+    else if (S.frame === 'axes') out.push('<path d="M' + f1(x0) + ',' + f1(y0) + 'V' + f1(y1) + 'H' + f1(xR) + '" style="fill:none;stroke:' + fc + ';stroke-width:1"/>');
+    if (ylW) out.push(TX(0, 0, ylab, S.axisSize, S.axisBold, ink, ' text-anchor="middle" transform="translate(' + f1(G.x + pad0 + S.axisSize) + ',' + f1((y0 + y1) / 2) + ') rotate(-90)"'));
+    if (xlH) out.push(TX((x0 + xR) / 2, G.y + G.h - pad0 - 2, xlab, S.axisSize, S.axisBold, ink, ' text-anchor="middle"'));
+    /* the colours: one per group; else one per metric (side by side), or per panel */
+    var gcols = cats[0].dists.map(function (D) { return solid(D.g.color || '--accent'); });
+    var pal = split ? palColors(S, nG, gcols) : palColors(S, multi ? nC : (o.nPanels || 1), gcols);
+    if (multi && split) {
+      var lgx = x0;
+      cats[0].dists.forEach(function (D, gi) {
+        var cg = solid(pal[gi % pal.length]), lab = fitF(D.g.name, S.tickSize, tW, fam, 180);
+        out.push('<rect x="' + f1(lgx) + '" y="' + f1(y0 - legH + 2) + '" width="11" height="11" rx="2" style="fill:' + cg + ';fill-opacity:' + Math.max(0.35, S.alpha) + '"/>');
+        out.push(TX(lgx + 16, y0 - legH + 11.5, lab, S.tickSize, S.tickBold, ink));
+        lgx += 16 + measureF(lab, S.tickSize, tW, fam) + 18;
+      });
+    }
+    var catW = (x1 - x0) / nC, slot = catW / nG;
+    var labels = [];
+    slots.forEach(function (sl, si) {
+      var D = sl.D, gi = sl.gi, itS = sl.it, nm = named[sl.ci];
+      var c = solid(split ? pal[gi % pal.length] : S.colorBy === 'same' ? pal[0] : pal[(multi ? sl.ci : (o.k || 0)) % pal.length]);
+      var cx = !multi && !split && !hasNames ? (x0 + xR) / 2 : x0 + catW * sl.ci + slot * (gi + 0.5), hw = slot / 2 * S.width * 0.92, St = D.S, K = Ks[si];
+      /* a pale fill takes its edges in the colour itself; a solid one, in a darker shade */
+      var shade = S.alpha < 0.6 ? c : mixC(c, '#000000', 0.35), edge = S.outline === 'dark' ? C(S.outlineColor, '#3d3d3d') : S.outline === 'fill' ? shade : 'none';
+      var innerC = S.innerColor === 'shade' ? shade : C(S.innerColor, '#3d3d3d'), medC = C(S.medianColor, '#ffffff'), lw = S.lineW;
+      var isBox = S.kind === 'box' || !K, NP = ' pointer-events="none"';
+      /* drawn in layers: the shape, the ordinary dots, the summary (so the
+         dots do not hide it), then the dots that matter */
+      var back = [], dots = [], mid = [], front = [];
+      function ln(xa, xb, ya, yb, st) { return '<line x1="' + f1(xa) + '" x2="' + f1(xb) + '" y1="' + f1(ya) + '" y2="' + f1(yb) + '" style="' + st + '"' + NP + '/>'; }
+      /* the violin, and inside it a thin box (whiskers to the last samples
+         within 1.5 × IQR, the middle half thick) and the median as a dot */
+      if (K) {
+        var L = [], Rr = [];
+        K.pts.forEach(function (q) { var yy = Y(q[0]), w = hw * q[1] / K.mx; L.push(f1(cx - w) + ',' + f1(yy)); Rr.push(f1(cx + w) + ',' + f1(yy)); });
+        back.push('<polygon points="' + L.concat(Rr.reverse()).join(' ') + '" style="fill:' + c + ';fill-opacity:' + S.alpha + ';stroke:' + edge + ';stroke-width:' + lw + ';stroke-linejoin:round"/>');
+        if (S.inner === 'box' && St.n >= 2) {
+          var bw = Math.max(3, Math.min(9, hw * 0.16));
+          mid.push(ln(cx, cx, Y(St.lowAdj), Y(St.highAdj), 'stroke:' + innerC + ';stroke-width:' + f1(Math.max(1.2, lw * 1.3))));
+          mid.push('<rect x="' + f1(cx - bw / 2) + '" y="' + f1(Y(St.q3)) + '" width="' + f1(bw) + '" height="' + f1(Math.max(1, Y(St.q1) - Y(St.q3))) + '" style="fill:' + innerC + '"' + NP + '/>');
+          mid.push('<circle cx="' + f1(cx) + '" cy="' + f1(Y(St.med)) + '" r="' + f1(Math.max(1.8, bw * 0.38)) + '" style="fill:' + medC + '"' + NP + '/>');
+        } else if (S.inner === 'quartiles' && St.n >= 2) {
+          [[St.q1, ';stroke-dasharray:4 3'], [St.med, ''], [St.q3, ';stroke-dasharray:4 3']].forEach(function (q) {
+            var w = hw * K.at(q[0]);
+            mid.push(ln(cx - w, cx + w, Y(q[0]), Y(q[0]), 'stroke:' + innerC + ';stroke-width:' + f1(lw * 1.2) + q[1]));
+          });
+        }
+      }
+      /* the box plot; or, for a violin from too few samples, a narrow box */
+      if (isBox && St.n >= 1) {
+        var bh = S.kind === 'box' ? hw * 0.85 : Math.max(4, hw * 0.26), wc = edge === 'none' ? shade : edge, ww = f1(Math.max(1.1, lw));
+        if (St.n >= 2) {
+          back.push(ln(cx, cx, Y(St.lowAdj), Y(St.q1), 'stroke:' + wc + ';stroke-width:' + ww));
+          back.push(ln(cx, cx, Y(St.q3), Y(St.highAdj), 'stroke:' + wc + ';stroke-width:' + ww));
+          [St.lowAdj, St.highAdj].forEach(function (v) { back.push(ln(cx - bh * 0.45, cx + bh * 0.45, Y(v), Y(v), 'stroke:' + wc + ';stroke-width:' + ww)); });
+          back.push('<rect x="' + f1(cx - bh) + '" y="' + f1(Y(St.q3)) + '" width="' + f1(2 * bh) + '" height="' + f1(Math.max(1, Y(St.q1) - Y(St.q3))) + '" style="fill:' + c +
+            ';fill-opacity:' + S.alpha + ';stroke:' + edge + ';stroke-width:' + lw + '"' + NP + '/>');
+        }
+        mid.push(ln(cx - bh, cx + bh, Y(St.med), Y(St.med), 'stroke:' + (S.outline === 'dark' ? C(S.outlineColor, '#3d3d3d') : S.alpha < 0.6 ? c : mixC(c, '#000000', 0.55)) + ';stroke-width:' + f1(Math.max(1.8, lw * 1.8))));
+      }
+      /* the samples: dots spread across the shape, the far ones dark and a
+         little larger, the reference a diamond; beyond the axis (or in only
+         one of the sample and the reference) a triangle at the edge */
+      var light = S.ptColor === 'light', appC = S.ptColor === 'app';
+      var pcol = light ? '#eef0f3' : appC ? C('--ink-2', '#3a4649') : '#1f1f1f', farCol = light ? '#ffffff' : appC ? C('--ink', '#172124') : '#000000';
+      var ringBg = C(S.plotBg, '#ffffff');
+      D.ps.forEach(function (p) {
+        var isNamed = !!nm[p.run.id], isHi = !!hiRun && p.run.id === hiRun, key1 = p.far || p.ref || isNamed || isHi;
+        var showPt = S.points === 'all' || (S.points === 'far' && key1) || isNamed || isHi;
+        var flier = !showPt && S.kind === 'box' && p.x !== null && !p.fl && St.n >= 2 && (p.x < St.lowAdj - 1e-12 || p.x > St.highAdj + 1e-12);
+        var u = hash01(p.run.id) - 0.5, y, edgeP = 0;
+        if (p.fl === 'new' || (p.x !== null && p.x > hi)) { y = y0 + 6; edgeP = 1; }
+        else if (p.fl === 'lost' || (p.x !== null && p.x < lo)) { y = y1 - 6; edgeP = -1; }
+        else y = Y(p.x);
+        var spread = edgeP ? 0.6 : K ? 0.8 * K.at(p.x) : S.kind === 'box' ? 0.55 : 0.35;
+        var x = cx + u * 2 * hw * spread;
+        var tip = p.run.name + ' · ' + itS.label + ': ' + dvVal(itS, p.v, Mo.isM) +
+          (Mo.lr ? (p.fl === 'new' ? ' · not in the reference' : p.fl === 'lost' ? ' · the reference has ' + dvVal(itS, itS.ref, Mo.isM) :
+            ' · ' + UI.fx(Math.pow(2, p.x), 2) + '× the reference (log₂ ' + UI.signed(p.x, 2) + ')') : '') +
+          (p.far ? ' · far from the rest: ' + dvFarText(p) : '') + (split ? ' · ' + D.g.name : '') + (p.ref ? ' · the reference' : '') +
+          (o.interactive ? (isNamed ? ' · click to hide its name' : ' · click to name it') : '');
+        var at = X ? '' : ' data-run="' + esc(p.run.id) + '" data-key="' + esc(sl.key) + '"' + (isNamed ? ' data-named="1"' : '') + ' data-tip="' + esc(tip) + '"';
+        var lay = key1 || edgeP ? front : dots, r = S.ptSize * (p.far ? 1.2 : 1);
+        if (edgeP) {
+          var sg = edgeP > 0 ? -1 : 1;
+          lay.push('<path d="M' + f1(x) + ',' + f1(y + sg * 4.5) + 'L' + f1(x + 4.2) + ',' + f1(y - sg * 3) + 'L' + f1(x - 4.2) + ',' + f1(y - sg * 3) + 'Z" style="fill:' + (p.far || p.ref ? farCol : pcol) + '"' + at + '/>');
+        } else if (p.ref && showPt) {
+          var rr = Math.max(3.5, r * 1.6);
+          lay.push('<path d="M' + f1(x) + ',' + f1(y - rr) + 'L' + f1(x + rr) + ',' + f1(y) + 'L' + f1(x) + ',' + f1(y + rr) + 'L' + f1(x - rr) + ',' + f1(y) + 'Z" style="fill:' + farCol + ';stroke:' + ringBg + ';stroke-width:0.9"' + at + '/>');
+        } else if (showPt) {
+          lay.push('<circle cx="' + f1(x) + '" cy="' + f1(y) + '" r="' + f1(r) + '" style="fill:' + (p.far ? farCol : pcol) + ';fill-opacity:' + (p.far ? 0.95 : 0.6) +
+            (p.far ? ';stroke:' + ringBg + ';stroke-width:0.7' : '') + '"' + at + '/>');
+        } else if (flier) {
+          lay.push('<circle cx="' + f1(x) + '" cy="' + f1(y) + '" r="' + f1(r) + '" style="fill:none;stroke:' + pcol + ';stroke-width:1"' + at + '/>');
+        } else if (!X) {
+          /* not drawn, but still there to point at and click */
+          lay.push('<circle cx="' + f1(x) + '" cy="' + f1(y) + '" r="' + f1(Math.max(3, S.ptSize)) + '" style="fill:#000000;fill-opacity:0"' + at + '/>');
+        }
+        if (isHi) front.push('<circle cx="' + f1(x) + '" cy="' + f1(y) + '" r="' + f1(Math.max(5.5, S.ptSize * 2.3)) + '" style="fill:none;stroke:#f28e2b;stroke-width:2"' + at + '/>');
+        if (isNamed || isHi) labels.push({ p: p, x: x, y: y, cx: cx, hw: hw, hi: isHi, si: si, key: sl.key });
+      });
+      out.push.apply(out, back.concat(dots, mid, front));
+      if (multi) return;
+      /* under the slot: the group and its size, or (one distribution) the size */
+      var catY = y1 + S.tickSize * 1.25 + 4;
+      if (split) {
+        out.push(TX(cx, catY, fitF(D.g.name, S.tickSize, tW, fam, slot - 4), S.tickSize, S.tickBold, ink, ' text-anchor="middle"'));
+        out.push(TX(cx, catY + S.tickSize * 1.2, 'n = ' + D.ps.length, S.tickSize * 0.88, false, ink, ' text-anchor="middle" opacity="0.65"'));
+      } else {
+        var cat = big && tx.cat !== undefined ? tx.cat : 'n = ' + D.ps.length;
+        if (cat) out.push(TX(cx, catY, fitF(cat, S.tickSize, tW, fam, x1 - x0 + nameW), S.tickSize * (big ? 1 : 0.9), big && S.tickBold, ink, ' text-anchor="middle"' + (big && tx.cat !== undefined ? '' : ' opacity="0.65"')));
+      }
+    });
+    /* several side by side: each one's name under its place, with a tick */
+    if (multi) cats.forEach(function (Ci, ci) {
+      var ccx = x0 + catW * (ci + 0.5), Ls = catLines[ci], tip = X ? '' : ' data-tip="' + esc(Ci.it.label + (Ci.it.full ? ' · ' + Ci.it.full : '') + ' · n = ' + Ci.pts.filter(Boolean).length) + '"';
+      if (S.frame !== 'none') out.push('<line x1="' + f1(ccx) + '" x2="' + f1(ccx) + '" y1="' + f1(y1) + '" y2="' + f1(y1 + 4) + '" style="stroke:' + fc + ';stroke-width:1"/>');
+      if (rot === 0) Ls.forEach(function (l, j) { out.push(TX(ccx, y1 + 7 + catFs * (0.9 + j * 1.2), l, catFs, S.tickBold, ink, ' text-anchor="middle"' + tip)); });
+      else if (rot === 45) { var ay = y1 + 8 + catFs * 0.5; out.push(TX(ccx, ay, Ls[0], catFs, S.tickBold, ink, ' text-anchor="end" transform="rotate(-45 ' + f1(ccx) + ' ' + f1(ay) + ')"' + tip)); }
+      else { var ax = ccx + catFs * 0.35, ay2 = y1 + 8; out.push(TX(ax, ay2, Ls[0], catFs, S.tickBold, ink, ' text-anchor="end" transform="rotate(-90 ' + f1(ax) + ' ' + f1(ay2) + ')"' + tip)); }
+    });
+    /* names: one distribution, in a column at its right, spread apart and
+       led back to their dots; several, beside the dot, spread apart too */
+    var lfs = S.labelSize, lW = S.labelBold ? 700 : 400, gap = lfs * 1.18, NP0 = ' pointer-events="none"';
+    function spreadY(arr) {
+      var ys = arr.map(function (q) { return q.y + lfs * 0.35; }), j;
+      for (j = 1; j < ys.length; j++) ys[j] = Math.max(ys[j], ys[j - 1] + gap);
+      if (ys.length && ys[ys.length - 1] > y1 + 4) { ys[ys.length - 1] = y1 + 4; for (j = ys.length - 2; j >= 0; j--) ys[j] = Math.min(ys[j], ys[j + 1] - gap); }
+      return ys;
+    }
+    function nameAt(q, x, y) {
+      var col = q.hi ? '#e8710a' : ink;
+      var at = X ? '' : ' data-run="' + esc(q.p.run.id) + '" data-key="' + esc(q.key) + '" data-named="1" data-tip="' + esc(q.p.run.name + (o.interactive ? ' · click to hide its name' : '')) + '"';
+      if (Math.abs(y - lfs * 0.35 - q.y) > 2 || x - q.x > S.ptSize + 6)
+        out.push('<line x1="' + f1(q.x + 3) + '" x2="' + f1(x - 3) + '" y1="' + f1(q.y) + '" y2="' + f1(y - lfs * 0.35) + '" style="stroke:' + col + ';stroke-width:0.7;opacity:0.6"' + NP0 + '/>');
+      out.push(TX(x, y, fitF(q.p.run.name, lfs, lW, fam, Math.max(36, xR - x - 4)), lfs, S.labelBold, col, at));
+    }
+    labels.sort(function (a, b) { return a.y - b.y; });
+    if (!split && !multi) {
+      if (labels.length) { var ys1 = spreadY(labels), lx = labels[0].cx + labels[0].hw + 12; labels.forEach(function (q, j) { nameAt(q, lx, ys1[j]); }); }
+    } else {
+      slots.forEach(function (sl, si) {
+        var arr = labels.filter(function (q) { return q.si === si; }), ys2 = spreadY(arr);
+        arr.forEach(function (q, j) { nameAt(q, q.x + S.ptSize + 4, ys2[j]); });
+      });
+    }
+  }
+  /* several side by side: the default title and axis title */
+  function comboTitle(Mo) { return Mo.isM ? 'Profile metrics' : 'Species'; }
+  function comboYlab(Mo, cats) {
+    if (Mo.lr) return dvYlab(Mo, cats[0].it);
+    var u = {};
+    cats.forEach(function (Ci) { u[dvYlab(Mo, Ci.it)] = true; });
+    var k = Object.keys(u);
+    return k.length === 1 ? k[0] : 'Value (each in its own unit)';
+  }
+  /* the panel width in the grid: one distribution and its names, or a
+     slot per group */
+  function dvPanelW(nG) { return nG > 1 ? Math.max(270, 100 + nG * 66) : 290; }
+  var DV_PH = 300;
+  function distCols(nG) {
+    var box = boxes.dist, avail = (box && box.clientWidth ? box.clientWidth : 1100) - 50;
+    return Math.max(1, Math.floor(avail / (dvPanelW(nG) + 10)));
+  }
+  function dvC(v, fb, X) { if (!v) return fb; if (v.indexOf('--') === 0) return X ? (UI.css(v) || fb) : 'var(' + v + ')'; return v; }
+  /* the grid of panels, under a heading and a key */
   function distSVG(Mo, o) {
     o = o || {};
-    var X = !!o.light, esc = UI.esc;
-    function C(name, fb) { return X ? (UI.css(name) || fb) : 'var(' + name + ')'; }
-    function CC(c) { return c && c.indexOf('--') === 0 ? C(c, '#0f6b6b') : c; }
-    var ink = C('--ink', '#172124'), ink2 = C('--ink-2', '#3a4649'), muted = C('--muted', '#63706d'), bg = C('--panel', '#ffffff'), line = C('--line', '#dbe0dc'), acc = C('--accent', '#0f6b6b');
-    var fam = X ? (UI.css('--sans') || 'sans-serif') : 'var(--sans)';
-    function f1(v) { return (+v).toFixed(1); }
-    function txt(x, y, t, size, fill, extra) {
-      return '<text x="' + f1(x) + '" y="' + f1(y) + '" style="font-family:' + esc(fam) + ';font-size:' + size + 'px;fill:' + fill + '"' + (extra || '') + '>' + t + '</text>';
-    }
-    function diamond(x, y, r, fill, extra) { return '<path d="M' + f1(x) + ',' + f1(y - r) + 'L' + f1(x + r) + ',' + f1(y) + 'L' + f1(x) + ',' + f1(y + r) + 'L' + f1(x - r) + ',' + f1(y) + 'Z" style="fill:' + fill + ';stroke:' + bg + ';stroke-width:0.8"' + (extra || '') + '/>'; }
-    function tri(x, y, up, fill, extra) { var s = up ? -1 : 1; return '<path d="M' + f1(x) + ',' + f1(y + s * 4.5) + 'L' + f1(x + 4.2) + ',' + f1(y - s * 3) + 'L' + f1(x - 4.2) + ',' + f1(y - s * 3) + 'Z" style="fill:' + fill + '"' + (extra || '') + '/>'; }
-    var nG = Mo.groups.length, split = nG > 1, SW = split ? 58 : 92, AX = 42, LBW = split ? 0 : 86;
-    var PW = dvPanelW(nG), PH = 252, TT = 40, PB = split ? 30 : 22, plotH = PH - TT - PB - 8;
+    var X = !!o.light, esc = UI.esc, S = dv.style;
+    var fam = fontOf(S.font), ink = dvC(S.ink, '#262626', X);
+    var nG = Mo.groups.length, PW = dvPanelW(nG), PH = DV_PH, GAP = 10;
     var cols = Math.max(1, Math.min(Mo.items.length, o.cols || 4)), rowsN = Math.ceil(Mo.items.length / cols);
-    var W = Math.max(cols * PW + 16, 520);
+    var W = Math.max(cols * (PW + GAP) + GAP, 520);
     var basisTxt = basis === 'uv' ? 'UV' : 'MS';
     var title = (Mo.isM ? 'Profile metrics (' + basisTxt + ')' : 'Species, % of identified ' + basisTxt + ' signal') + ' · ' +
       (Mo.lr ? 'log₂ ratio to the reference (' + A.refLabel() + ')' + (dv.same ? ', one scale' : '') : 'values') + ' · ' + UI.plural(Mo.runs.length, 'sample');
-    var out = [];
-    out.push(txt(12, 21, esc(title), 13, ink, ' font-weight="700"'));
-    /* the key, wrapped to the width */
-    var lx = 12, ly = 42, keyParts = [];
-    function key(sym, label) {
-      var w = 14 + measureText(label, 10.5, 400) + 18;
-      if (lx > 12 && lx + w > W - 12) { lx = 12; ly += 17; }
-      keyParts.push(sym(lx + 5, ly - 3.5)); keyParts.push(txt(lx + 14, ly, esc(label), 10.5, ink2));
-      lx += w;
-    }
-    key(function (x, y) { return '<circle cx="' + f1(x) + '" cy="' + f1(y) + '" r="2.8" style="fill:' + ink2 + ';opacity:0.55"/>'; }, 'a sample');
-    key(function (x, y) { return diamond(x, y, 4.6, acc); }, 'the reference' + (A.ref && A.ref.group ? ' (its samples)' : ''));
-    if (dv.hits !== 'none') key(function (x, y) { return '<circle cx="' + f1(x) + '" cy="' + f1(y) + '" r="3.3" style="fill:' + ink + '"/>'; }, (split ? 'far from the rest: ' + DV_RULE[dv.hits] + ' (listed below the figure)' : 'named: ' + DV_RULE[dv.hits] + ' (the farthest ' + DV_LABELS + ' in a panel)'));
-    key(function (x, y) { return '<rect x="' + f1(x - 2.5) + '" y="' + f1(y - 6) + '" width="5" height="12" style="fill:' + ink2 + ';opacity:0.7"/><line x1="' + f1(x - 6) + '" x2="' + f1(x + 6) + '" y1="' + f1(y) + '" y2="' + f1(y) + '" style="stroke:' + ink + ';stroke-width:2"/>'; }, 'median, middle half and range');
-    key(function (x, y) { return '<path d="M' + f1(x - 5) + ',' + f1(y + 5) + 'C' + f1(x - 3) + ',' + f1(y - 6) + ' ' + f1(x + 3) + ',' + f1(y - 6) + ' ' + f1(x + 5) + ',' + f1(y + 5) + 'Z" style="fill:' + acc + ';fill-opacity:0.22;stroke:' + acc + '"/>'; }, 'the spread (from ' + DV_MIN + ' samples on)');
-    if (Mo.lr) key(function (x, y) { return tri(x, y, true, ink); }, 'not in the reference, or beyond the axis (▼ not in the sample)');
-    var head = ly + 16, H = head + rowsN * PH + 8;
-    out.unshift('<rect width="' + W + '" height="' + H + '" style="fill:' + bg + '"/>');
-    out = out.concat(keyParts);
-    var hiRun = dv.hi;
+    var key = (S.kind === 'box' ? 'Box: the middle half of the samples, the line the median, whiskers to the last sample within 1.5 × IQR' :
+      'Violin: the spread of the samples' + (S.inner === 'box' ? ' (inside, the middle half as a bar and the median as a white dot)' : S.inner === 'quartiles' ? ' (lines at the quartiles and the median)' : '')) +
+      ' · ◆ the reference' + (A.ref && A.ref.group ? ' (its samples)' : '') + (dv.hits !== 'none' ? ' · dark dots: far from the rest (' + DV_RULE[dv.hits] + ')' : '') +
+      (Mo.lr ? ' · ▲▼ beyond the axis, or in only one of the sample and the reference (▲ not in the reference, ▼ not in the sample)' : '');
+    var keyL = wrapF(key, 11, 400, fam, W - 24, 3), head = 32 + keyL.length * 15 + 6;
+    var H = head + rowsN * (PH + GAP) + GAP;
+    var out = ['<rect width="' + W + '" height="' + H + '" style="fill:' + dvC(S.bg, '#ffffff', X) + '"/>'];
+    out.push('<text x="12" y="22" style="font-family:' + esc(fam) + ';font-size:14px;font-weight:700;fill:' + ink + '">' + esc(title) + '</text>');
+    keyL.forEach(function (l, i) { out.push('<text x="12" y="' + (42 + i * 15) + '" style="font-family:' + esc(fam) + ';font-size:11px;fill:' + ink + '" opacity="0.75">' + esc(l) + '</text>'); });
     Mo.items.forEach(function (I, k) {
-      var px = 8 + (k % cols) * PW, py = head + Math.floor(k / cols) * PH, it = I.it;
-      out.push('<rect x="' + f1(px) + '" y="' + f1(py) + '" width="' + (PW - 8) + '" height="' + (PH - 8) + '" rx="6" style="fill:none;stroke:' + line + '">' +
-        (it.full ? '<title>' + esc(it.label + ' · ' + it.full) + '</title>' : '') + '</rect>');
-      var unit = dvUnit(it, Mo.isM), tl = wrap2(it.label + (!Mo.lr && unit ? ' (' + unit + ')' : ''), 11.5, 600, PW - 26);
-      tl.forEach(function (s, j) { out.push(txt(px + 10, py + 17 + j * 14, esc(s), 11.5, ink, ' font-weight="600"')); });
-      var y0 = py + TT, y1 = y0 + plotH, lo, hi;
-      if (Mo.lr) { var Lm = dv.same ? Mo.lim : I.lim; lo = -Lm; hi = Lm; }
-      else {
-        var xs = I.pts.filter(function (p) { return p && p.x !== null; }).map(function (p) { return p.x; });
-        lo = xs.length ? Math.min.apply(null, xs) : 0; hi = xs.length ? Math.max.apply(null, xs) : 1;
-        var pad = (hi - lo) * 0.08 || Math.abs(hi) * 0.1 || 1;
-        lo = lo >= 0 && lo - pad < 0 ? 0 : lo - pad; hi += pad;
-      }
-      function Y(v) { return y1 - (v - lo) / (hi - lo) * plotH; }
-      var xA = px + AX, xB = px + AX + nG * SW;
-      /* the axis: grid lines and values */
-      var tk, stp;
-      tk = UI.plot.ticks(lo, hi, 4); stp = UI.plot.niceStep(hi - lo, 4);
-      tk.forEach(function (t) {
-        var y = Y(t);
-        out.push('<line x1="' + f1(xA) + '" x2="' + f1(xB) + '" y1="' + f1(y) + '" y2="' + f1(y) + '" style="stroke:' + line + ';stroke-width:' + (Mo.lr && t === 0 ? 0 : 1) + '"/>');
-        var lab = Mo.lr ? (t === 0 ? '0' : (t > 0 ? '+' : '−') + UI.plot.tickLabel(Math.abs(t), stp)) : (it.area ? T.fmtArea(t) : UI.plot.tickLabel(t, stp));
-        out.push(txt(xA - 6, y + 3.6, esc(lab), 10, muted, ' text-anchor="end"'));
-      });
-      if (Mo.lr) out.push('<line x1="' + f1(xA) + '" x2="' + f1(xB) + '" y1="' + f1(Y(0)) + '" y2="' + f1(Y(0)) + '" style="stroke:' + ink2 + ';stroke-width:1;stroke-dasharray:4 3"/>');
-      out.push('<line x1="' + f1(xA) + '" x2="' + f1(xA) + '" y1="' + f1(y0) + '" y2="' + f1(y1) + '" style="stroke:' + ink2 + ';stroke-width:1"/>');
-      I.dists.forEach(function (D, gi) {
-        var cx = xA + gi * SW + SW / 2, hw = SW / 2 - 7, col = CC(D.g.color), S = D.S, K = D.K;
-        /* the violin */
-        if (K) {
-          var L = [], Rr = [];
-          K.pts.forEach(function (q) {
-            var yy = Y(Math.max(lo, Math.min(hi, q[0]))), w = hw * q[1] / K.mx;
-            L.push(f1(cx - w) + ',' + f1(yy)); Rr.push(f1(cx + w) + ',' + f1(yy));
-          });
-          out.push('<polygon points="' + L.concat(Rr.reverse()).join(' ') + '" style="fill:' + col + ';fill-opacity:0.2;stroke:' + col + ';stroke-width:1;stroke-opacity:0.85"/>');
-        }
-        /* range, middle half, median */
-        function cl(v) { return Math.max(lo, Math.min(hi, v)); }
-        if (S.n >= 2) {
-          out.push('<line x1="' + f1(cx) + '" x2="' + f1(cx) + '" y1="' + f1(Y(cl(S.min))) + '" y2="' + f1(Y(cl(S.max))) + '" style="stroke:' + ink2 + ';stroke-width:1"/>');
-          out.push('<rect x="' + f1(cx - 3) + '" y="' + f1(Y(cl(S.q3))) + '" width="6" height="' + f1(Math.max(1, Y(cl(S.q1)) - Y(cl(S.q3)))) + '" style="fill:' + ink2 + ';opacity:0.7"/>');
-        }
-        if (S.n >= 1) out.push('<line x1="' + f1(cx - 9) + '" x2="' + f1(cx + 9) + '" y1="' + f1(Y(cl(S.med))) + '" y2="' + f1(Y(cl(S.med))) + '" style="stroke:' + ink + ';stroke-width:2.2"><title>' +
-          esc(D.g.name + ': median ' + (Mo.lr ? UI.signed(S.med, 2) + ' (log₂)' : dvVal(it, S.med, Mo.isM)) + ' · middle half ' + (Mo.lr ? UI.signed(S.q1, 2) + ' to ' + UI.signed(S.q3, 2) : dvVal(it, S.q1, Mo.isM) + ' to ' + dvVal(it, S.q3, Mo.isM)) + ' · n = ' + S.n) + '</title></line>');
-        /* the samples: dots spread across the violin, the far ones dark,
-           the reference a diamond; beyond the axis (or in only one of the
-           sample and the reference) a triangle at the edge */
-        var placed = D.ps.map(function (p) {
-          var u = hash01(p.run.id) - 0.5, y, edge = 0;
-          if (p.fl === 'new') { y = y0 + 5; edge = 1; }
-          else if (p.fl === 'lost') { y = y1 - 5; edge = -1; }
-          else if (p.x > hi) { y = y0 + 5; edge = 1; }
-          else if (p.x < lo) { y = y1 - 5; edge = -1; }
-          else y = Y(p.x);
-          var spread = edge ? 0.7 : K ? 0.85 * K.at(p.x) : 0.4;
-          return { p: p, x: cx + u * 2 * hw * spread, y: y, edge: edge };
-        });
-        placed.sort(function (a, b) { return (a.p.far ? 1 : 0) - (b.p.far ? 1 : 0) || (a.p.ref ? 1 : 0) - (b.p.ref ? 1 : 0); });
-        placed.forEach(function (q) {
-          var p = q.p, tip = p.run.name + ' · ' + it.label + ': ' + dvVal(it, p.v, Mo.isM) +
-            (Mo.lr ? (p.fl === 'new' ? ' · not in the reference' : p.fl === 'lost' ? ' · the reference has ' + dvVal(it, it.ref, Mo.isM) :
-              ' · ' + UI.fx(Math.pow(2, p.x), 2) + '× the reference (log₂ ' + UI.signed(p.x, 2) + ')') : '') +
-            (p.far ? ' · far from the rest: ' + dvFarText(p) : '') + (split ? ' · ' + D.g.name : '');
-          var at = ' data-run="' + esc(p.run.id) + '"', ttl = '<title>' + esc(tip) + '</title>';
-          var fill = p.far ? ink : ink2, op = p.far ? 0.95 : 0.55;
-          if (q.edge) out.push(tri(q.x, q.y, q.edge > 0, p.ref ? acc : fill, at).replace('/>', '>' + ttl + '</path>'));
-          else if (p.ref) out.push(diamond(q.x, q.y, 4.8, acc, at).replace('/>', '>' + ttl + '</path>'));
-          else out.push('<circle cx="' + f1(q.x) + '" cy="' + f1(q.y) + '" r="' + (p.far ? 3.3 : 2.8) + '" style="fill:' + fill + ';opacity:' + op + '"' + at + '>' + ttl + '</circle>');
-          if (hiRun && p.run.id === hiRun) out.push('<circle cx="' + f1(q.x) + '" cy="' + f1(q.y) + '" r="6.5" style="fill:none;stroke:' + acc + ';stroke-width:2"' + at + '>' + ttl + '</circle>');
-        });
-        /* names: the farthest few, and the sample picked, in a column at
-           the right, spread apart, each led back to its dot */
-        if (!split) {
-          var named = placed.filter(function (q) { return q.p.far; }).sort(function (a, b) { return b.p.far - a.p.far; });
-          var more = Math.max(0, named.length - DV_LABELS);
-          named = named.slice(0, DV_LABELS);
-          var hq = hiRun ? placed.filter(function (q) { return q.p.run.id === hiRun; })[0] : null;
-          if (hq && named.indexOf(hq) < 0) named.push(hq);
-          named.sort(function (a, b) { return a.y - b.y; });
-          var gap = 11.5, ys = named.map(function (q) { return q.y + 3.5; }), j;
-          for (j = 1; j < ys.length; j++) ys[j] = Math.max(ys[j], ys[j - 1] + gap);
-          if (ys.length && ys[ys.length - 1] > y1 + 2) { ys[ys.length - 1] = y1 + 2; for (j = ys.length - 2; j >= 0; j--) ys[j] = Math.min(ys[j], ys[j + 1] - gap); }
-          var lxp = cx + hw + 10;
-          named.forEach(function (q, j2) {
-            var isHi = hiRun && q.p.run.id === hiRun;
-            out.push('<line x1="' + f1(q.x + 3) + '" x2="' + f1(lxp - 2) + '" y1="' + f1(q.y) + '" y2="' + f1(ys[j2] - 3.5) + '" style="stroke:' + (isHi ? acc : muted) + ';stroke-width:0.7;opacity:0.8"/>');
-            out.push(txt(lxp, ys[j2], esc(fitText(q.p.run.name, 9.5, 600, LBW - 8, true)), 9.5, isHi ? acc : ink, ' font-weight="600" data-run="' + esc(q.p.run.id) + '"'));
-          });
-          if (more) out.push(txt(lxp, y1 + 15, '+' + more + ' more', 9.5, muted));
-        }
-        /* under the slot: the group and its count */
-        var nTot = D.ps.length;
-        out.push(txt(cx, y1 + (split ? 14 : 15), esc(split ? fitText(D.g.name, 10, 600, SW - 4) : 'n = ' + nTot), 10, split ? ink : muted, ' text-anchor="middle"' + (split ? ' font-weight="600"' : '')));
-        if (split) out.push(txt(cx, y1 + 26, 'n = ' + nTot, 9.5, muted, ' text-anchor="middle"'));
-      });
+      var px = GAP + (k % cols) * (PW + GAP), py = head + Math.floor(k / cols) * (PH + GAP), k2 = I.it.key;
+      out.push(X ? '<g>' : '<g data-item="' + k + '" tabindex="0" role="button" aria-label="' + esc('Open ' + I.it.label + ' on its own') + '">');
+      if (!X) out.push('<rect x="' + px + '" y="' + py + '" width="' + PW + '" height="' + PH + '" rx="5" class="dv-hit" fill="#000000" fill-opacity="0"/>');
+      vPanel(out, I, Mo, dv.pstyle[k2] || S, { x: px, y: py, w: PW, h: PH }, { X: X, k: k, nPanels: Mo.items.length, texts: dv.ptext[k2] });
+      out.push('</g>');
     });
-    return { svg: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ' + W + ' ' + H + '" width="' + W + '" height="' + H + '" role="img" aria-label="Violin plots">' + out.join('') + '</svg>', w: W, h: H };
+    return { svg: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ' + W + ' ' + H + '" width="' + W + '" height="' + H + '" role="img" aria-label="Distributions">' + out.join('') + '</svg>', w: W, h: H };
   }
-  function distCols(nG) {
-    var box = boxes.dist, avail = (box && box.clientWidth ? box.clientWidth : 1100) - 50;
-    return Math.max(1, Math.floor(avail / dvPanelW(nG)));
+  /* one panel on its own, as large as asked */
+  function onePanelSVG(Mo, I, S, k, pt, o) {
+    o = o || {};
+    var W = pt.w || 720, H = pt.h || 520, X = !!o.light;
+    var out = ['<rect width="' + W + '" height="' + H + '" style="fill:' + dvC(S.bg, '#ffffff', X) + '"/>'];
+    vPanel(out, I, Mo, S, { x: 0, y: 0, w: W, h: H }, { X: X, k: k, nPanels: Mo.items.length, big: true, texts: pt, interactive: !X });
+    return { svg: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ' + W + ' ' + H + '" width="' + W + '" height="' + H + '" role="img" aria-label="' + UI.esc(I.it.label) + '">' + out.join('') + '</svg>', w: W, h: H };
   }
-  function saveDist(fmt) {
-    var runs = distRuns(), F, Mo = distModel(runs), cols = distCols(Mo.groups.length);
-    UI.plot.withLight(function () { F = distSVG(Mo, { light: true, cols: cols }); });
-    var name = 'MuroSense_violins_' + (Mo.isM ? 'metrics' : 'species') + (Mo.lr ? '_log2ratio' : '_values');
+  function svgOut(F, name, fmt) {
     if (fmt === 'svg') return UI.saveFile(name + '.svg', '<?xml version="1.0" encoding="UTF-8"?>\n' + F.svg + '\n', 'image/svg+xml');
     var sc = F.w * F.h > 9e6 ? 2 : 3;
     return UI.plot.svgToPng(F.svg, F.w, F.h, sc).then(function (b) { return b ? UI.plot.pngDpi(b, F.w * sc) : null; })
       .then(function (b) { if (b) return UI.saveFile(name + '.png', b, 'image/png'); UI.toast('Could not make the picture.'); return false; });
+  }
+  function saveDist(fmt) {
+    var Mo = distModel(distRuns()), F, cols = distCols(Mo.groups.length);
+    UI.plot.withLight(function () { F = distSVG(Mo, { light: true, cols: cols }); });
+    return svgOut(F, 'MuroSense_' + (dv.style.kind === 'box' ? 'boxplots_' : 'violins_') + (Mo.isM ? 'metrics' : 'species') + (Mo.lr ? '_log2ratio' : '_values'), fmt);
+  }
+  /* a label that follows the pointer over anything with data-tip */
+  var dvTipEl = null;
+  function dvTipHide() { if (dvTipEl) dvTipEl.style.display = 'none'; }
+  function dvTips(host) {
+    host.addEventListener('mousemove', function (e) {
+      var t = e.target && e.target.closest ? e.target.closest('[data-tip]') : null;
+      if (!t || !host.contains(t)) { dvTipHide(); return; }
+      if (!dvTipEl) { dvTipEl = h('div', { class: 'dv-tip', role: 'tooltip' }); document.body.appendChild(dvTipEl); }
+      var el = dvTipEl;
+      el.textContent = t.getAttribute('data-tip');
+      el.style.display = 'block';
+      var r = el.getBoundingClientRect(), x = e.clientX + 14, y = e.clientY + 16;
+      if (x + r.width > window.innerWidth - 8) x = Math.max(8, e.clientX - r.width - 12);
+      if (y + r.height > window.innerHeight - 8) y = Math.max(8, e.clientY - r.height - 12);
+      el.style.left = x + 'px'; el.style.top = y + 'px';
+    });
+    host.addEventListener('mouseleave', dvTipHide);
+  }
+  /* the controls of the grid set the look of every plot (and of those
+     dressed on their own, for that one setting) */
+  function setAll(k, v) {
+    if (k === 'theme') { dv.style = withTheme(dv.style, v); Object.keys(dv.pstyle).forEach(function (q) { dv.pstyle[q] = withTheme(dv.pstyle[q], v); }); }
+    else { dv.style[k] = v; Object.keys(dv.pstyle).forEach(function (q) { dv.pstyle[q][k] = v; }); }
+    if (dv.cstyle) { if (k === 'theme') dv.cstyle = withTheme(dv.cstyle, v); else dv.cstyle[k] = v; UI.store.set('dvComboStyle', dv.cstyle); }
+    saveStyle();
+  }
+  var distRedraw = null;
+  /* the controls column is built again when a choice changes what it
+     offers: it keeps its scroll (and the window's) and the focus */
+  function keepScroll(el, fn) {
+    var body = el.closest ? el.closest('.modal-b') : null, st = el.scrollTop, bt = body ? body.scrollTop : 0;
+    function ctls() { return [].slice.call(el.querySelectorAll('input,select,button,textarea')); }
+    var fi = ctls().indexOf(document.activeElement);
+    fn();
+    function back() {
+      el.scrollTop = st; if (body) body.scrollTop = bt;
+      if (fi >= 0) { var f = ctls()[fi]; if (f && document.activeElement !== f) { try { f.focus({ preventScroll: true }); } catch (e) { /* fine */ } } }
+    }
+    back();
+    requestAnimationFrame(function () { if (el.scrollTop !== st || (body && body.scrollTop !== bt)) back(); });
+  }
+  /* A plot in its own window, to look at closely and dress: one panel of
+     the grid, or several side by side. Point at a dot for its sample, click
+     it to name it or hide its name; change the texts, fonts, colours, the
+     kind of plot and its size; save it, or give its look to every plot.
+     cfg: { title, sub, style(), texts(), keep(ps, pt), reset(), svg(ps, pt,
+     light), keys() ([{ key, pts }]), defTitle(), defYlab(), cat() (the text
+     under the plot, or null), one (colour by plot), size() ({ w, h }),
+     extra(api, pt) (controls of its own, shown first), file(ps, pt) } */
+  function plotWindow(cfg) {
+    var ps = cfg.style(), pt = cfg.texts(), Md;
+    var fig = h('div', { class: 'dv-pop-fig' });
+    var redrawGrid = UI.debounce(function () { if (distRedraw) distRedraw(); }, 300);
+    /* drawn to fit the window, but a wide picture no smaller than 60 %: it scrolls */
+    function draw() {
+      var F = cfg.svg(ps, pt, false), wrap = fig.parentNode, avail = wrap ? wrap.clientWidth - 18 : 0;
+      fig.innerHTML = F.svg;
+      var sv = fig.firstChild;
+      if (sv && avail > 0 && F.w * 0.6 > avail) { sv.style.maxWidth = 'none'; sv.style.width = Math.round(F.w * 0.6) + 'px'; }
+    }
+    function changed() { cfg.keep(ps, pt); draw(); redrawGrid(); }
+    fig.addEventListener('click', function (e) {
+      var t = e.target && e.target.closest ? e.target.closest('[data-run]') : null;
+      if (!t || !t.getAttribute('data-key')) return;
+      toggleName(t.getAttribute('data-key'), t.getAttribute('data-run'), t.getAttribute('data-named') === '1');
+      dvTipHide(); draw(); redrawGrid();
+    });
+    dvTips(fig);
+    /* the controls */
+    function row(label, el, title) { return h(el && /^(INPUT|SELECT)$/.test(el.tagName) ? 'label' : 'div', { class: 'dv-ctl-row', title: title || null }, h('span', null, label), el); }
+    function sel(opts, val, on) {
+      var s = h('select', { class: 'input' }, opts.map(function (o) { return h('option', { value: o[0], selected: String(val) === String(o[0]) }, o[1]); }));
+      s.onchange = function () { on(s.value); }; return s;
+    }
+    function num(val, min, max, stp, on) {
+      var i = h('input', { type: 'number', class: 'input', value: val, min: min, max: max, step: stp, style: { width: '74px' } });
+      i.oninput = function () { var v = parseFloat(i.value); if (isFinite(v)) on(Math.max(min, Math.min(max, v))); }; return i;
+    }
+    function chk(val, on, label) { var c = h('input', { type: 'checkbox', checked: !!val }); c.onchange = function () { on(c.checked); }; return h('label', { class: 'check small' }, c, label || 'Bold'); }
+    function txt(val, on, ph) { var i = h('input', { type: 'text', class: 'input', value: val, placeholder: ph || '' }); i.oninput = UI.debounce(function () { on(i.value); }, 150); return i; }
+    function colr(val, on) { var i = h('input', { type: 'color', value: hexOf(val), class: 'dv-color' }); i.oninput = function () { on(i.value); }; return i; }
+    function range(val, min, max, stp, on) { var i = h('input', { type: 'range', min: min, max: max, step: stp, value: val }); i.oninput = function () { on(parseFloat(i.value)); }; return i; }
+    function pair(a, b) { return h('span', { class: 'row', style: { gap: '10px' } }, a, b); }
+    var ctl = h('div', { class: 'dv-ctl' });
+    var api = { changed: changed, build: function () { build(); }, draw: draw, row: row, sel: sel };
+    function build() { keepScroll(ctl, build0); }
+    function build0() {
+      UI.clear(ctl);
+      function set(k2) { return function (v) { ps[k2] = v; changed(); }; }
+      function setT(k2) { return function (v) { pt[k2] = v; changed(); }; }
+      function sec(t) { return h('div', { class: 'dv-ctl-sec' }, h('h4', null, t), [].slice.call(arguments, 1)); }
+      var one = !!cfg.one, cat = cfg.cat ? cfg.cat() : null, sz = cfg.size();
+      if (cfg.extra) ctl.appendChild(cfg.extra(api, pt));
+      ctl.appendChild(sec('Texts',
+        row('Title', txt(pt.title !== undefined ? pt.title : cfg.defTitle(), setT('title'), 'no title')),
+        row('Y-axis title', txt(pt.ylab !== undefined ? pt.ylab : cfg.defYlab(), setT('ylab'), 'none')),
+        row('X-axis title', txt(pt.xlab || '', setT('xlab'), 'none')),
+        cat !== null ? row('Under the plot', txt(pt.cat !== undefined ? pt.cat : cat, setT('cat'), 'nothing')) : null));
+      ctl.appendChild(sec('Font',
+        row('Font', sel(DV_FONTS.map(function (f) { return [f[0], f[1]]; }), ps.font, set('font'))),
+        row('Title', pair(num(ps.titleSize, 7, 40, 0.5, set('titleSize')), chk(ps.titleBold, set('titleBold')))),
+        row('Axis titles', pair(num(ps.axisSize, 7, 36, 0.5, set('axisSize')), chk(ps.axisBold, set('axisBold')))),
+        row(cfg.tickLabel || 'Axis numbers', pair(num(ps.tickSize, 6, 32, 0.5, set('tickSize')), chk(ps.tickBold, set('tickBold')))),
+        row('Sample names', pair(num(ps.labelSize, 6, 28, 0.5, set('labelSize')), chk(ps.labelBold, set('labelBold'))))));
+      var vio = ps.kind === 'violin';
+      ctl.appendChild(sec('Plot',
+        row('Kind', sel([['violin', 'Violin'], ['box', 'Box plot']], ps.kind, function (v) { ps.kind = v; changed(); build(); })),
+        vio ? row('Inside', sel([['box', 'Box and median dot'], ['quartiles', 'Quartile lines'], ['none', 'Nothing']], ps.inner, set('inner'))) : null,
+        vio ? row('Ends', sel([['smooth', 'Smooth tails'], ['cut', 'Cut at the data']], ps.shape, set('shape')),
+          'Smooth tails run two bandwidths past the outermost samples (as seaborn draws them, never below 0 for shares); cut ends the shape at the data') : null,
+        vio ? row('Violin from', sel([[3, '3 samples'], [4, '4 samples'], [5, '5 samples'], [8, '8 samples']], ps.minN, function (v) { ps.minN = +v; changed(); }),
+          'With fewer samples, a box: a shape drawn from very few samples says little') : null,
+        row('Width', range(ps.width, 0.3, 1, 0.05, set('width'))),
+        row('Samples', sel([['all', 'All, as dots'], ['far', 'Only those far from the rest'], ['none', 'None']], ps.points, set('points'))),
+        row('Dot size', range(ps.ptSize, 1, 7, 0.2, set('ptSize'))),
+        row('Line width', range(ps.lineW, 0.4, 3, 0.1, set('lineW')))));
+      ctl.appendChild(sec('Colours',
+        row('Theme', sel(Object.keys(DV_THEMES).map(function (t) { return [t, DV_THEMES[t].name]; }), ps.theme, function (v) { ps = withTheme(ps, v); changed(); build(); })),
+        row('Palette', sel(DV_PALS.map(function (p) { return [p[0], p[1]]; }), ps.palette, function (v) { ps.palette = v; changed(); build(); })),
+        ps.palette === 'one' ? row('Colour', colr(ps.color || '#4c72b0', set('color'))) : null,
+        one ? row('Colour by', sel([['panel', cfg.eachLabel || 'Each plot its own'], ['same', cfg.sameLabel || 'Every plot alike']], ps.colorBy, set('colorBy'))) : null,
+        row('Fill', range(ps.alpha, 0.1, 1, 0.05, set('alpha')), 'How solid the fill is'),
+        row('Outline', sel([['dark', 'Dark'], ['fill', 'In the fill colour'], ['none', 'None']], ps.outline, set('outline'))),
+        row('Background', colr(ps.bg, set('bg'))),
+        row('Plot area', colr(ps.plotBg, set('plotBg'))),
+        row('Text and axes', colr(ps.ink, function (v) { ps.ink = v; ps.frameColor = v; changed(); })),
+        row('Grid lines', pair(chk(ps.grid, set('grid'), 'Show'), colr(ps.gridColor, set('gridColor')))),
+        row('Frame', sel([['box', 'Box'], ['axes', 'Left and bottom'], ['none', 'None']], ps.frame, set('frame')))));
+      ctl.appendChild(sec('Names',
+        h('p', { class: 'small muted', style: { margin: '0 0 6px' } }, 'Point at a dot to see its sample; click it to name it, or click a name to hide it.'),
+        row('Far ones', chk(ps.autoNames, set('autoNames'), 'Name them by themselves'), 'Name the samples far from the rest without clicking'),
+        h('div', { class: 'row', style: { gap: '6px', 'flex-wrap': 'wrap' } },
+          h('button', { class: 'btn sm ghost', type: 'button', onclick: function () { cfg.keys().forEach(function (q) { dv.plab[q.key] = { on: {}, off: {} }; }); draw(); redrawGrid(); } }, 'Undo my clicks'),
+          h('button', { class: 'btn sm ghost', type: 'button', onclick: function () {
+            cfg.keys().forEach(function (q) { var L = dv.plab[q.key] = { on: {}, off: {} }; q.pts.forEach(function (p) { if (p) L.off[p.run.id] = true; }); }); draw(); redrawGrid(); } }, 'Hide every name'))));
+      ctl.appendChild(sec('Size (for saving)',
+        row('Width (px)', num(pt.w || sz.w, 300, 3000, 10, function (v) { pt.w = v; changed(); })),
+        row('Height (px)', num(pt.h || sz.h, 240, 2000, 10, function (v) { pt.h = v; changed(); }))));
+    }
+    build(); draw();
+    function save(fmt) { var F; UI.plot.withLight(function () { F = cfg.svg(ps, pt, true); }); return svgOut(F, cfg.file(ps, pt), fmt); }
+    var allBtn = h('button', { class: 'btn sm', type: 'button', title: 'Every plot takes this look: theme, colours, fonts, kind and sizes (not this plot’s texts or names)', onclick: function () {
+      dv.style = Object.assign({}, ps); saveStyle(); dv.pstyle = {}; renderDist();
+      allBtn.textContent = 'Given to all ✓'; setTimeout(function () { allBtn.textContent = 'Give this look to all plots'; }, 1800); } }, 'Give this look to all plots');
+    Md = UI.modal({ title: cfg.title, wide: true, sub: cfg.sub,
+      body: [h('div', { class: 'dv-pop' }, h('div', { class: 'dv-pop-figwrap' }, fig), ctl)],
+      onClose: function () { dvTipHide(); renderDist(); },
+      foot: [h('button', { class: 'btn sm ghost', type: 'button', title: 'This plot back to the look of the others, with its own texts and names cleared', onclick: function () {
+          cfg.reset(); ps = cfg.style(); pt = cfg.texts(); build(); draw(); redrawGrid(); } }, 'Reset this plot'),
+        allBtn, h('span', { class: 'spacer' }),
+        h('button', { class: 'btn sm', type: 'button', onclick: function () { save('svg'); } }, UI.icon('download'), 'SVG'),
+        h('button', { class: 'btn sm', type: 'button', onclick: function () { save('png'); } }, UI.icon('download'), 'PNG'),
+        h('button', { class: 'btn primary', type: 'button', onclick: function () { Md.close(); } }, 'Done')] });
+    /* once in the window, its width is known */
+    requestAnimationFrame(draw);
+    return Md;
+  }
+  function fileSafe(t) { return String(t).replace(/[\\/:*?"<>|]+/g, '_').replace(/\s+/g, '_').slice(0, 60); }
+  /* one panel of the grid in its own window */
+  function distPopup(k) {
+    var Mo = distModel(distRuns()), I = Mo.items[k];
+    if (!I) return;
+    var key = I.it.key, one = Mo.groups.length < 2;
+    plotWindow({ title: I.it.label, sub: (I.it.full ? I.it.full + ' · ' : '') + UI.plural(Mo.runs.length, 'sample') + (Mo.lr ? ' · log₂ ratio to ' + A.refLabel() : ''),
+      style: function () { return Object.assign({}, dv.pstyle[key] || dv.style); },
+      texts: function () { return Object.assign({}, dv.ptext[key] || {}); },
+      keep: function (ps, pt) { dv.pstyle[key] = Object.assign({}, ps); dv.ptext[key] = Object.assign({}, pt); },
+      reset: function () { delete dv.pstyle[key]; delete dv.ptext[key]; delete dv.plab[key]; },
+      svg: function (ps, pt, light) { return onePanelSVG(Mo, I, ps, k, pt, { light: light }); },
+      keys: function () { return [{ key: key, pts: I.pts }]; },
+      defTitle: function () { return I.it.label; }, defYlab: function () { return dvYlab(Mo, I.it); },
+      cat: function () { return one ? 'n = ' + I.dists[0].ps.length : null; },
+      one: one, tickLabel: one ? 'Axis numbers' : 'Numbers, groups', size: function () { return { w: 720, h: 520 }; },
+      file: function (ps, pt) { return 'MuroSense_' + (ps.kind === 'box' ? 'boxplot_' : 'violin_') + fileSafe(pt.title || I.it.label); } });
+  }
+  /* Several metrics (or species) side by side on one axis, in the order
+     chosen, each named under the plot; one violin per group in each when
+     the grid is by group. The axis, groups and rule for far samples follow
+     the grid; the look starts as the grid's. */
+  dv.combo = { M: UI.store.get('dvComboM', null), S: UI.store.get('dvComboS', null) };
+  dv.cstyle = UI.store.get('dvComboStyle', null); dv.ctext = {};
+  function comboW(n, nG) { return Math.round(Math.max(560, Math.min(2400, 150 + n * Math.max(84, nG * 62)))); }
+  function comboSVG(Mo, S, pt, o) {
+    o = o || {};
+    var n = Mo.items.length, X = !!o.light, W = pt.w || comboW(n, Mo.groups.length), H = pt.h || 540;
+    var out = ['<rect width="' + W + '" height="' + H + '" style="fill:' + dvC(S.bg, '#ffffff', X) + '"/>'];
+    if (!n) out.push('<text x="' + (W / 2) + '" y="' + (H / 2) + '" text-anchor="middle" style="font-family:' + UI.esc(fontOf(S.font)) + ';font-size:14px;fill:' + dvC(S.ink, '#262626', X) + '">Add a ' + (Mo.isM ? 'metric' : 'species') + ' to plot (on the right).</text>');
+    else vPanel(out, Mo.items[0], Mo, S, { x: 0, y: 0, w: W, h: H }, { X: X, big: true, texts: pt, interactive: !X, cats: Mo.items, rot: pt.rot || 'auto' });
+    return { svg: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ' + W + ' ' + H + '" width="' + W + '" height="' + H + '" role="img" aria-label="' + (Mo.isM ? 'Profile metrics' : 'Species') + ' side by side">' + out.join('') + '</svg>', w: W, h: H };
+  }
+  function comboPopup() {
+    var runs = distRuns(), base = distModel(runs), isM = base.isM, which = isM ? 'M' : 'S', what = isM ? 'metric' : 'species';
+    var byKey = {};
+    base.all.forEach(function (it) { byKey[it.key] = it; });
+    var keys = (dv.combo[which] || []).filter(function (k) { return byKey[k]; });
+    if (!keys.length) keys = base.items.slice(0, 6).map(function (I) { return I.it.key; });
+    var Mo;
+    function model() { Mo = distModel(runs, keys.map(function (k) { return byKey[k]; })); }
+    function keepKeys() { dv.combo[which] = keys.slice(); UI.store.set('dvCombo' + which, dv.combo[which]); }
+    model();
+    var nG = Mo.groups.length;
+    plotWindow({ title: (isM ? 'Profile metrics' : 'Species') + ' side by side',
+      sub: UI.plural(runs.length, 'sample') + (Mo.lr ? ' · log₂ ratio to ' + A.refLabel() : ' · values') + (nG > 1 ? ' · one violin per group' : '') + ' · the axis, the groups and the rule for far samples follow the grid',
+      style: function () { return Object.assign({}, dv.cstyle || dv.style); },
+      texts: function () { return Object.assign({}, dv.ctext); },
+      keep: function (ps, pt) { dv.cstyle = Object.assign({}, ps); dv.ctext = Object.assign({}, pt); UI.store.set('dvComboStyle', dv.cstyle); },
+      reset: function () { dv.cstyle = null; dv.ctext = {}; UI.store.set('dvComboStyle', null); Object.keys(dv.plab).forEach(function (q) { if (q.indexOf('combo|') === 0) delete dv.plab[q]; }); },
+      svg: function (ps, pt, light) { return comboSVG(Mo, ps, pt, { light: light }); },
+      keys: function () { return Mo.items.map(function (I) { return { key: 'combo|' + I.it.key, pts: I.pts }; }); },
+      defTitle: function () { return comboTitle(Mo); }, defYlab: function () { return Mo.items.length ? comboYlab(Mo, Mo.items) : ''; },
+      cat: null, one: nG < 2, eachLabel: 'Each its own colour', sameLabel: 'All one colour', tickLabel: 'Numbers, names',
+      size: function () { return { w: comboW(Mo.items.length, nG), h: 540 }; },
+      file: function (ps) { return 'MuroSense_' + (ps.kind === 'box' ? 'boxplots_' : 'violins_') + (isM ? 'metrics' : 'species') + '_side_by_side'; },
+      extra: function (api, pt) {
+        var list = h('div', { class: 'dv-order', role: 'list' }), addSel = h('select', { class: 'input', 'aria-label': 'Add a ' + what });
+        var from = -1;
+        function reorder() { keepKeys(); model(); api.changed(); api.build(); }
+        function move(i, j) { if (j < 0 || j >= keys.length || i === j) return; var k = keys.splice(i, 1)[0]; keys.splice(j, 0, k); reorder(); }
+        keys.forEach(function (k, i) {
+          var it = byKey[k];
+          var rowEl = h('div', { class: 'dv-ord', role: 'listitem', draggable: 'true', title: it.label + (it.full ? ' · ' + it.full : '') + ' · drag to move' },
+            h('span', { class: 'grip', 'aria-hidden': 'true' }, '⠿'), h('span', { class: 'lab' }, (i + 1) + '. ' + it.label),
+            h('span', { class: 'btns' },
+              h('button', { class: 'btn sm ghost', type: 'button', 'aria-label': 'Move ' + it.label + ' up', title: 'Up', disabled: i === 0, onclick: function () { move(i, i - 1); } }, '↑'),
+              h('button', { class: 'btn sm ghost', type: 'button', 'aria-label': 'Move ' + it.label + ' down', title: 'Down', disabled: i === keys.length - 1, onclick: function () { move(i, i + 1); } }, '↓'),
+              h('button', { class: 'btn sm ghost', type: 'button', 'aria-label': 'Take ' + it.label + ' out', title: 'Take out', onclick: function () { keys.splice(i, 1); reorder(); } }, '×')));
+          rowEl.addEventListener('dragstart', function (e) { from = i; rowEl.classList.add('drag'); try { e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', String(i)); } catch (er) { /* fine */ } });
+          rowEl.addEventListener('dragend', function () { rowEl.classList.remove('drag'); });
+          rowEl.addEventListener('dragover', function (e) { if (from < 0) return; e.preventDefault(); rowEl.classList.add('over'); });
+          rowEl.addEventListener('dragleave', function () { rowEl.classList.remove('over'); });
+          rowEl.addEventListener('drop', function (e) { e.preventDefault(); rowEl.classList.remove('over'); var f = from; from = -1; if (f >= 0) move(f, i); });
+          list.appendChild(rowEl);
+        });
+        if (!keys.length) list.appendChild(h('p', { class: 'small muted', style: { margin: '2px 0' } }, 'None yet: add some below.'));
+        var left = base.all.filter(function (it) { return keys.indexOf(it.key) < 0; });
+        addSel.appendChild(h('option', { value: '' }, left.length ? '+ Add a ' + what + '…' : 'All are in the plot'));
+        left.forEach(function (it) { addSel.appendChild(h('option', { value: it.key }, it.label)); });
+        addSel.disabled = !left.length;
+        addSel.onchange = function () { if (addSel.value) { keys.push(addSel.value); reorder(); } };
+        return h('div', { class: 'dv-ctl-sec' }, h('h4', null, (isM ? 'Metrics' : 'Species') + ', in order'),
+          h('p', { class: 'small muted', style: { margin: '0 0 6px' } }, 'Left to right in the plot. Drag one to move it, or use the arrows.'),
+          list, addSel,
+          h('div', { class: 'row', style: { gap: '6px', 'flex-wrap': 'wrap', margin: '6px 0 2px' } },
+            h('button', { class: 'btn sm ghost', type: 'button', title: 'The ' + (isM ? 'metrics' : 'species') + ' shown in the grid, in its order', onclick: function () { keys = base.items.map(function (I) { return I.it.key; }); reorder(); } }, 'As in the grid'),
+            h('button', { class: 'btn sm ghost', type: 'button', onclick: function () { keys = []; reorder(); } }, 'Clear')),
+          api.row('Names under the plot', api.sel([['auto', 'Automatic'], ['flat', 'Straight'], ['slant', 'Slanted'], ['up', 'Upright']], pt.rot || 'auto', function (v) { pt.rot = v; api.changed(); }),
+            'Straight names wrap into up to three lines; slanted and upright ones take long names'));
+      } });
   }
   /* the samples far from the rest, farthest first */
   function distHits(Mo) {
@@ -27852,13 +28386,21 @@ APP.views.compare = (function () {
         .concat([{ label: 'Median of the samples', get: function (x) { return x.D.S.med; }, fmt: '0.000', width: 12 }, { label: 'How far', get: function (x) { return dvFarText(x.p); }, width: 30 }]) };
     return [summary, hits, values];
   }
+  /* drawn again in place: the box keeps its height meanwhile, so the page
+     does not jump */
   function renderDist() {
+    var box = boxes.dist, keep = box && box.offsetHeight;
+    if (keep) box.style.minHeight = keep + 'px';
+    try { renderDist0(); } finally { if (box) box.style.minHeight = ''; }
+  }
+  function renderDist0() {
+    distRedraw = null;
     if (skip('dist')) return;
     var box = boxes.dist; UI.clear(box);
     var runs = distRuns(), card = h('div', { class: 'card' });
     box.appendChild(card);
     var head = h('div', { class: 'card-h' }, h('div', null, h('h3', null, 'Distributions'),
-      h('div', { class: 'small muted' }, 'Violin plots: every sample a dot, over the spread of all of them · samples far from the rest are named · click a dot to follow that sample in every panel')));
+      h('div', { class: 'small muted' }, 'Violin or box plots: every sample a dot, over the spread of all of them · samples far from the rest are named · point at a dot for its sample · click a plot to open it on its own, dress it and save it · Side by side… puts several in one plot')));
     card.appendChild(head);
     if (runs.length < 2) { card.appendChild(h('div', { class: 'empty' }, 'Tick two or more samples for the distributions.')); return; }
     var R = refCol();
@@ -27877,6 +28419,7 @@ APP.views.compare = (function () {
     var splitIn = hasGroups(runs) ? h('input', { type: 'checkbox', checked: dv.split, onchange: function () { dv.split = splitIn.checked; UI.store.set('dvSplit', dv.split); renderDist(); } }) : null;
     head.appendChild(h('div', { class: 'row', style: { gap: '6px', 'flex-wrap': 'wrap' } },
       h('button', { class: 'btn sm', onclick: function () { heatChooser(runs, isM); }, title: 'Choose the ' + (isM ? 'metrics' : 'species') + ' to show (the heat map shows the same)' }, UI.icon('list'), 'Choose ' + (isM ? 'metrics' : 'species') + '…'),
+      h('button', { class: 'btn sm', onclick: comboPopup, title: 'Several ' + (isM ? 'metrics' : 'species') + ' side by side in one plot, in the order you choose, named underneath' }, UI.icon('layers'), 'Side by side…'),
       h('button', { class: 'btn sm', onclick: function () { saveDist('svg'); } }, UI.icon('download'), 'SVG'),
       h('button', { class: 'btn sm', onclick: function () { saveDist('png'); } }, UI.icon('download'), 'PNG'),
       h('button', { class: 'btn sm', title: 'The spread of each panel, the samples far from the rest and the values plotted, as an Excel workbook',
@@ -27887,20 +28430,39 @@ APP.views.compare = (function () {
       splitIn ? h('label', { class: 'check small', title: 'One violin per group in each panel; the samples in no group together' }, splitIn, ' by group') : null,
       h('label', { class: 'row small muted', style: { gap: '6px' } }, 'Follow', hiSel),
       h('span', { class: 'small muted' }, Mo.items.length + ' of ' + Mo.all.length + ' ' + (isM ? 'metrics' : 'species') + ' · ' + UI.plural(runs.length, 'sample'))));
+    /* the look of every plot */
+    var S0 = dv.style;
+    function lookSel(label, opts, val, k, tip) {
+      var el = h('select', { class: 'input', style: { width: 'auto' }, 'aria-label': label, title: tip || null,
+        onchange: function () { setAll(k, el.value); renderDist(); } }, opts.map(function (o) { return h('option', { value: o[0], selected: String(val) === String(o[0]) }, o[1]); }));
+      return h('label', { class: 'row small muted', style: { gap: '6px' } }, label, el);
+    }
+    var kindSeg = segBtns([['violin', 'Violin', 'The spread of the samples as a shape, a thin box and the median inside'], ['box', 'Box plot', 'The middle half of the samples as a box, the median as a line, whiskers to the last sample within 1.5 × IQR']],
+      S0.kind, function (v) { setAll('kind', v); renderDist(); }, 'Plot');
+    card.appendChild(h('div', { class: 'filters' }, kindSeg,
+      lookSel('Theme', Object.keys(DV_THEMES).map(function (t) { return [t, DV_THEMES[t].name]; }), S0.theme, 'theme', 'Background, frame, grid and how the shapes are drawn'),
+      lookSel('Colours', DV_PALS.map(function (q) { return [q[0], q[1]]; }), S0.palette, 'palette', 'One colour per group (by group), or per plot'),
+      lookSel('Dots', [['all', 'every sample'], ['far', 'only those far from the rest'], ['none', 'none']], S0.points, 'points'),
+      lookSel('Font', DV_FONTS.map(function (f) { return [f[0], f[1]]; }), S0.font, 'font'),
+      Object.keys(dv.pstyle).length ? h('button', { class: 'btn sm ghost', type: 'button', title: 'The plots dressed on their own take the look above again (their texts stay)',
+        onclick: function () { dv.pstyle = {}; renderDist(); } }, 'Undo looks of single plots') : null));
     var fig = h('div', { class: 'dist-fig' }), hitsBox = h('div', { class: 'stack', style: { gap: '8px' } });
     function drawFig() {
       if (!Mo.items.length) { fig.innerHTML = ''; fig.appendChild(h('div', { class: 'empty' }, 'No ' + (isM ? 'metric' : 'species') + ' chosen. Use Choose… to add some.')); return; }
       fig.innerHTML = distSVG(Mo, { cols: distCols(Mo.groups.length) }).svg;
       hiSel.value = dv.hi || '';
     }
-    fig.addEventListener('click', function (e) {
-      var t = e.target && e.target.closest ? e.target.closest('[data-run]') : null;
-      if (!t) return;
-      var id = t.getAttribute('data-run');
-      dv.hi = dv.hi === id ? null : id;
-      drawFig();
-    });
+    /* a plot clicked (or Enter on it) opens on its own */
+    function openAt(e) {
+      var g = e.target && e.target.closest ? e.target.closest('[data-item]') : null;
+      if (!g || !fig.contains(g)) return;
+      dvTipHide(); distPopup(+g.getAttribute('data-item'));
+    }
+    fig.addEventListener('click', openAt);
+    fig.addEventListener('keydown', function (e) { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openAt(e); } });
+    dvTips(fig);
     drawFig();
+    distRedraw = function () { if (fig.isConnected) drawFig(); };
     /* the samples far from the rest: the most often first, then a table */
     var H = distHits(Mo);
     if (dv.hits !== 'none') {
@@ -27932,11 +28494,12 @@ APP.views.compare = (function () {
     }
     card.appendChild(h('div', { class: 'card-b stack', style: { gap: '10px' } }, fig, hitsBox,
       h('p', { class: 'note' }, 'Each panel shows how one ' + (isM ? 'metric' : 'species') + ' spreads across the samples. With one sample per strain (a screen) the violin is the spread of the collection, not of replicates: its body is the typical strain and its tails the strains that stand out. ' +
-        'The violin is a kernel density estimate (Gaussian kernel, Silverman’s bandwidth), drawn over the range of the data and only from ' + DV_MIN + ' samples on; the box is the middle half of the samples (first to third quartile), the bar the median, the line the range. ' +
+        'The violin is a kernel density estimate (Gaussian kernel, Silverman’s bandwidth), its tails run two bandwidths past the outermost samples (or end at the data: Ends, in a plot’s own window), never below 0 for shares, and it is drawn from ' + dv.style.minN + ' samples on (a box below that). ' +
+        'Inside it, and in the box plot, the box is the middle half of the samples (first to third quartile), the median a white dot (a line in the box plot), and the whiskers reach the last sample within 1.5 × IQR of the box. ' +
         (Mo.lr ? 'Against the reference (◆, ' + A.refLabel() + ') the axis is log₂ of the sample’s value over the reference’s, +1 twice as much, −1 half, each panel scaled to its own data (one scale puts every panel on the same one); a triangle marks a sample beyond the axis, or a value in only one of the sample and the reference (▲ not in the reference, ▼ not in the sample), left out of the violin and its statistics. ' :
           'Each panel has its own axis, in its unit. ') +
         (dv.hits === 'none' ? '' : 'Named: samples ' + DV_RULE[dv.hits] + (dv.hits === 'mad' ? ' (a robust SD is 1.4826 × the median absolute deviation; when half the samples are alike, 1.2533 × the mean absolute deviation)' : '') + ', judged within each violin; the farthest ' + DV_LABELS + ' are named in each panel, all of them in the list and in Excel. ') +
-        'The panels are those chosen for the heat map (Choose… changes both).')));
+        'The panels are those chosen for the heat map (Choose… changes both). Theme, Colours, Dots and Font set every plot; a plot opened on its own can be dressed further (texts, sizes, bold, colours, background), its names shown or hidden one by one, and its look given to all. Side by side… puts several ' + (isM ? 'metrics' : 'species') + ' in one plot, in the order you choose, named under it.')));
   }
 
   function exportX(runs) {
@@ -30232,7 +30795,10 @@ APP.views.guide = (function () {
         [h('b', null, 'Total PG. '), 'How much peptidoglycan each sample gave, from the UV: the summed UV peak area of its identified muropeptides, in the absorbance units the file records, times minutes. At 205 nm the area follows the number of disaccharide-peptide units, so this is an amount of material, not a count of molecules, and it compares samples prepared and injected the same way. Beside it: the area of every UV peak in the muropeptide window, the share the identified species explain, and the percentage of the reference (or of the median sample without one). A sample below the threshold (50% unless changed) is flagged low. The chart shows the areas or the percentages, with the reference and the threshold as dashed lines; samples without UV show n/a.'],
         [h('b', null, 'Against the reference. '), 'With a reference chosen, the metric and species tables show each sample as its value, its difference from the reference (percentage points), or its ratio to it (1.00× is the same; for species, new where the reference lacks it, lost where only the reference has it). Cells are tinted red for more and blue for less, full at 4-fold, and the reference’s own values lead the table.'],
         [h('b', null, 'Heat maps. '), 'The profile metrics (with total PG) or the species, one column per sample and one row per metric or species. ', h('i', null, 'Choose…'), ' picks the rows, and × beside a row removes it. Colours: a z-score per row (blue below the mean, red above), each row from its lowest to its highest value, for species the % of signal on a linear or log scale (one blue ramp, darker for more; grey: not found), and, with a reference, the ratio to the reference (log₂, red more, blue less, full at 4-fold; the reference column is marked ◆) or, for species, the difference in percentage points. A ring marks a species new against the reference or lost. Rows and samples can be clustered (average linkage, with dendrograms), and values written in the cells. ', h('i', null, 'Colours'), ' changes the scheme: Blue – red (the default), Blue – orange (safe for colour-blind readers), Purple – green, Teal – brown, Viridis, Magma or Greys (for print); ', h('i', null, 'reverse'), ' swaps the high and the low colours. The colours named above are those of Blue – red. SVG or PNG save it in the light theme, in the scheme chosen.'],
-        [h('b', null, 'Distributions. '), 'Violin plots: one panel per metric (or species), every sample a dot over the shape of their spread, so a screen shows where wild type sits among the strains and which strains stand out. The violin is a kernel density estimate (Gaussian kernel, Silverman’s bandwidth), drawn over the range of the data and only from five samples on; the box marks the middle half of the samples (first to third quartile), the bar their median, the line their range; the reference is a diamond. ', h('i', null, 'Ratio to reference'), ' (the default when a reference is set) plots log₂ of each sample’s value over the reference’s, each panel scaled to its own data (', h('i', null, 'one scale'), ' puts all on the same axis); a triangle marks a sample beyond the axis, or a species in only one of the sample and the reference (▲ not in the reference, ▼ not in the sample), which stays out of the violin and its statistics. ', h('i', null, 'Values'), ' gives each panel its own axis, in its unit. Samples far from the rest are named: more than 3 robust SDs from the median (a robust SD is 1.4826 × the median absolute deviation, or 1.2533 × the mean absolute deviation when half the samples are alike), or, with Tukey’s rule, beyond 1.5 × the interquartile range past the quartiles; each violin is judged on its own, from five samples on. The farthest six in a panel are named beside it; the list under the figure has all of them, farthest first, and which samples are named most often. Click a dot (or choose under ', h('i', null, 'Follow'), ') to ring that sample in every panel. ', h('i', null, 'by group'), ' draws one violin per group, the samples in no group together. The panels are those chosen for the heat map. With one sample per strain, the violin is the spread of the collection, not of replicates. SVG and PNG save the figure in the light theme; Excel saves the statistics of each panel, the samples far from the rest and the values plotted.'],
+        [h('b', null, 'Distributions. '), 'Violin or box plots: one panel per metric (or species), every sample a dot over the shape of their spread, so a screen shows where wild type sits among the strains and which strains stand out. The violin is a kernel density estimate (Gaussian kernel, Silverman’s bandwidth); its tails run two bandwidths past the outermost samples, as seaborn draws them (never below 0 for shares), and it is drawn from five samples on (fewer get a narrow box). Inside it a thin box marks the middle half of the samples (first to third quartile), the white dot their median, the whiskers the last samples within 1.5 × the interquartile range; ', h('i', null, 'Box plot'), ' draws the same as a full box with the median as a line. The reference is a diamond. ', h('i', null, 'Ratio to reference'), ' (the default when a reference is set) plots log₂ of each sample’s value over the reference’s, each panel scaled to its own data (', h('i', null, 'one scale'), ' puts all on the same axis); a triangle marks a sample beyond the axis, or a species in only one of the sample and the reference (▲ not in the reference, ▼ not in the sample), which stays out of the violin and its statistics. ', h('i', null, 'Values'), ' gives each panel its own axis, in its unit. Samples far from the rest are named: more than 3 robust SDs from the median (a robust SD is 1.4826 × the median absolute deviation, or 1.2533 × the mean absolute deviation when half the samples are alike), or, with Tukey’s rule, beyond 1.5 × the interquartile range past the quartiles; each violin is judged on its own, from five samples on. The farthest six in a panel are named beside it; the list under the figure has all of them, farthest first, and which samples are named most often (click one, or choose under ', h('i', null, 'Follow'), ', to ring that sample in every panel). ', h('i', null, 'by group'), ' draws one violin per group, the samples in no group together. ',
+          h('b', null, 'The look. '), h('i', null, 'Theme'), ' sets the background, frame, grid and how the shapes are drawn (Classic: solid colours with a dark outline; White grid; Clean: left and bottom axes only; Grey panel; Dark, for slides; App, which follows the light or dark theme); ', h('i', null, 'Colours'), ' the palette (Deep, Muted, Pastel, Bright, Tableau 10, Colour-blind safe, Soft, Orange and green, two graded ones, the group colours, or one colour of your choice), one colour per group, or per panel; ', h('i', null, 'Dots'), ' which samples are drawn; ', h('i', null, 'Font'), ' the typeface. These set every panel and are remembered. ',
+          h('b', null, 'One plot on its own. '), 'Click a panel to open it large. Point at a dot to see its sample and value; click a dot to show its name, click a name (or its dot) to hide it. Change the title and axis titles, the font, the size and boldness of each kind of text, the kind of plot, what is inside the violin, its ends, width, fill, outline, the background and plot-area colours, grid and frame, and the size of the picture; save it as SVG or PNG. The look stays with that panel in the grid; ', h('i', null, 'Give this look to all plots'), ' hands it to every panel, and ', h('i', null, 'Reset this plot'), ' takes it back. ',
+          h('b', null, 'Side by side. '), h('i', null, 'Side by side…'), ' puts several metrics (or species) in one plot on one axis, like a seaborn violin plot with categories: choose them and their order on the right (drag one, or use the arrows; ', h('i', null, 'As in the grid'), ' takes those of the grid), and their names stand under the plot, straight (wrapped), slanted or upright. With ', h('i', null, 'by group'), ' each gets one violin per group, with a key above. The axis (ratio to reference or values), the groups and the rule for far samples follow the grid; in Values, metrics in different units share one axis, so the ratio to the reference compares them better. It is dressed and saved like a single plot, and remembers its choice. The panels are those chosen for the heat map. With one sample per strain, the violin is the spread of the collection, not of replicates. SVG and PNG save the figure (or the single plot) as it looks, in the theme chosen (App in its light version); Excel saves the statistics of each panel, the samples far from the rest and the values plotted.'],
         [h('b', null, 'Charts. '), 'At a glance and the species chart keep one group of bars per sample at a readable width; with many samples they scroll sideways and keep their value axis in view. Bar width widens them. With group means, whiskers show ± one standard deviation.'],
         [h('b', null, 'Tables and Excel. '), 'The metric and species tables are the exact values behind the charts and heat maps. Excel beside Samples saves the whole comparison in one workbook: the Samples sheet (original names, groups, the reference, total PG, quality), the quality checklist, total PG, the profile metrics, the group means with their SD, the metrics and species against the reference (difference and ratio), and the species matrices. Each section also saves on its own: Excel above a table saves that table as shown, and SVG or PNG above a chart that chart (see Saving).']])]));
 
