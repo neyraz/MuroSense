@@ -5,23 +5,28 @@
      kept here is used only when offline.
    - The manifest, the icons and the fonts are kept here and refreshed in the
      background.
+   - A file missing on the server is skipped, never a reason not to start.
    Nothing you analyse passes through here: MuroSense reads your files on your
    own computer and sends them nowhere. */
 
-var CACHE = 'murosense-app-v1';
+var CACHE = 'murosense-app-v2';
 var CORE = [
   './',
   './manifest.webmanifest',
-  './icons/icon-192.png',
-  './icons/icon-512.png',
-  './icons/maskable-512.png',
-  './icons/icon.svg'
+  './icon-192.png',
+  './icon-512.png',
+  './maskable-512.png',
+  './icon.svg'
 ];
 
 self.addEventListener('install', function (event) {
   event.waitUntil(
     caches.open(CACHE)
-      .then(function (cache) { return cache.addAll(CORE); })
+      .then(function (cache) {
+        return Promise.all(CORE.map(function (url) {
+          return cache.add(url).catch(function () { /* not on the server: skipped */ });
+        }));
+      })
       .then(function () { return self.skipWaiting(); })
   );
 });
