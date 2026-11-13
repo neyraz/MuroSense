@@ -5801,6 +5801,117 @@ SAC.pipeline = (function () {
              useRt: true, sd: Math.max(L.sd, 1.5), source: 'lock', terms: ['lock-mass offset', 'rt'], nMol: L.n, nIons: L.n, n0: L.n,
              rmsBefore: Math.sqrt(L.offset * L.offset + L.sd * L.sd), rmsAfter: L.sd, reason: '' };
   }
+  /* ---------- a large m/z offset, found before calibration ----------
+     A Waters file centroided without its lock-mass correction can sit 50 to
+     150 ppm off: beyond the +-40 ppm window in which the calibration looks
+     for its anchors, so it finds none and nothing is identified (a run of
+     2018 read -80 to -100 ppm, its own lock-spray Leu-enkephalin -97 ppm).
+     The strongest features are matched to the core muropeptides of every
+     built-in chemistry within +-200 ppm; their errors, each feature counted
+     once and weighted by its signal, pile up at the true offset, while
+     chance matches spread over the whole window. The lock-spray ion, read in
+     the same wide window, is a second witness, and the only one when a run
+     holds few muropeptides (then only if the run's own features agree with
+     it better than with no offset). The data are moved by that offset only
+     when it lies beyond the calibration's reach and the evidence is clear;
+     the usual calibration then removes what is left. */
+  var COARSE_PPM = 200, COARSE_REACH = 30, coarseIdx = null;
+  function coarseIndex() {
+    if (coarseIdx) return coarseIdx;
+    var seen = {}, groups = [];
+    DEFAULTS.autoProfiles.forEach(function (id) {
+      var p = L.PROFILES[id];
+      if (!p) return;
+      try {
+        p = L.clone(p);
+        if (p.choose) p = Object.assign(p, L.clone(p.choose));
+        var core = coreEntries(L.buildSpace(p, { stage: 1, maxModsPerMolecule: 1 }));
+        ['reduced', 'none'].forEach(function (m) {
+          groupsFor(core, m).forEach(function (g) { if (!seen[g.fstr]) { seen[g.fstr] = 1; groups.push(g); } });
+        });
+      } catch (e) { /* a chemistry that cannot be built takes no part */ }
+    });
+    groups.sort(function (a, b) { return a.mass - b.mass; });
+    coarseIdx = S.index(groups);
+    return coarseIdx;
+  }
+  /* the lock-spray reference ion within the wide window: its offset, if steady */
+  function lockWide(run) {
+    var fl = run.roles && run.roles.lock && run.roles.lock.length ? run.roles.lock[0] : null;
+    if (fl === null || !run.functions[fl]) return null;
+    var set = run.functions[fl], best = null;
+    LOCK_IONS.forEach(function (ion) {
+      var mz = (C.fMass(ion.f) + ion.z * PROTON) / ion.z, tol = mz * COARSE_PPM * 1e-6, errs = [];
+      for (var s = 0; s < set.n; s++) {
+        var k = SAC.mzml.peakIn(set, s, mz - tol, mz + tol);
+        if (k >= 0) errs.push((set.mz[k] - mz) / mz * 1e6);
+      }
+      if (errs.length >= 5 && (!best || errs.length > best.errs.length)) best = { ion: ion.name, errs: errs };
+    });
+    if (!best) return null;
+    var med = U.median(best.errs), sd = 1.4826 * U.mad(best.errs, med);
+    return { ion: best.ion, offset: med, sd: sd, n: best.errs.length, ok: sd <= 10 };
+  }
+  function coarseOffset(feats, run) {
+    var idx = coarseIndex(), cand = feats.filter(function (F) {
+      if (F.lone || F.parent || F.nIso < 3) return false;
+      return F.charges.length >= 2 || F.charges[0] >= 2 || F.sn >= 30;
+    });
+    cand.sort(function (a, b) { return b.area - a.area; });
+    cand = cand.slice(0, 400);
+    var hits = [];
+    cand.forEach(function (F, i) {
+      var w = Math.pow(Math.max(F.area, 0), 0.75);
+      S.lookup(idx, F.massRaw || F.mass, COARSE_PPM).forEach(function (x) { hits.push({ p: x.ppm, w: w, f: x.g.fstr, i: i }); });
+    });
+    /* the features (once each) and compositions matched within +-half of an offset */
+    function support(c, half) {
+      var sf = {}, sc = {}, s = 0, n = 0, ps = [];
+      hits.forEach(function (x) {
+        if (Math.abs(x.p - c) > half) return;
+        ps.push(x);
+        if (!sf[x.i]) { sf[x.i] = 1; s += x.w; }
+        if (!sc[x.f]) { sc[x.f] = 1; n++; }
+      });
+      return { c: c, s: s, n: n, ps: ps };
+    }
+    var scan = [];
+    for (var c = -COARSE_PPM + 10; c <= COARSE_PPM - 10; c += 2) scan.push(support(c, 10));
+    var best = scan.reduce(function (a, b) { return b.s > a.s ? b : a; }, scan[0]);
+    var second = scan.filter(function (x) { return Math.abs(x.c - best.c) > 25; }).reduce(function (a, b) { return b.s > a.s ? b : a; }, { s: 0, n: 0 });
+    var zero = scan.filter(function (x) { return Math.abs(x.c) <= 20; }).reduce(function (a, b) { return b.s > a.s ? b : a; }, { s: 0, n: 0 });
+    /* the offset itself: the signal-weighted median of the matches in the best window */
+    var ps = best.ps.slice().sort(function (a, b) { return a.p - b.p; }), tw = 0, acc = 0, off = best.c;
+    ps.forEach(function (x) { tw += x.w; });
+    for (var k = 0; k < ps.length; k++) { acc += ps[k].w; if (acc >= tw / 2) { off = ps[k].p; break; } }
+    var lock = lockWide(run);
+    var out = { applied: false, offset: Math.round(off * 10) / 10, n: best.n, ratio: best.s / Math.max(second.s, zero.s, 1e-9),
+                lock: lock ? { ion: lock.ion, offset: Math.round(lock.offset * 10) / 10, sd: Math.round(lock.sd * 10) / 10, n: lock.n, ok: lock.ok } : null };
+    if (Math.abs(off) > COARSE_REACH && best.n >= 4 && best.s >= 2 * second.s && best.s >= 2.5 * zero.s) {
+      out.applied = true; out.source = 'muropeptides'; out.ppm = off;
+    } else if (lock && lock.ok && Math.abs(lock.offset) > COARSE_REACH) {
+      var sL = support(lock.offset, 10);
+      if (sL.n >= 2 && sL.s > zero.s) { out.applied = true; out.source = 'lock'; out.ppm = lock.offset; out.n = sL.n; }
+    }
+    if (out.applied) {
+      out.ppm = Math.round(out.ppm * 10) / 10;
+      out.lockAgrees = !!(lock && lock.ok && Math.abs(lock.offset - out.ppm) <= 25);
+    }
+    return out;
+  }
+  /* every m/z of the run moved by -ppm (measured = true x (1 + ppm 1e-6)),
+     on the scale the reader keeps (negative ions sit +2H higher) */
+  function shiftRun(run, ppm) {
+    var f = 1 / (1 + ppm * 1e-6), sh = run.mzShift || 0;
+    Object.keys(run.functions).forEach(function (k) {
+      var fn = run.functions[k], i;
+      if (!fn || fn.kind !== 'ms' || !fn.mz) return;
+      for (i = 0; i < fn.mz.length; i++) fn.mz[i] = sh + (fn.mz[i] - sh) * f;
+      if (fn.prec) { for (i = 0; i < fn.prec.length; i++) fn.prec[i] *= f; fn.precMin *= f; fn.precMax *= f; }
+      if (fn.isoCenter) fn.isoCenter *= f;
+    });
+    run.coarsePpm = (run.coarsePpm || 0) + ppm;
+  }
   /* custom building blocks of every library taking part, merged by code */
   function mergeBlocks(list) {
     var out = { mods: [], residues: [] }, seenM = {}, seenR = {};
@@ -6092,12 +6203,23 @@ SAC.pipeline = (function () {
     var blocks = mergeBlocks([st.customBlocks, st.customProfile && st.customProfile.custom].concat(autoLibs.map(function (lb) { return lb.profile && lb.profile.custom; })));
     var reg = C.registerCustom(blocks);
     SAC.evidence.setShift(run.mzShift || 0); run0Shift = run.mzShift || 0;
-    var lock = lockMass(run);
 
     say('Finding features', 0.05);
     var det = FT.detect(ms1, { rt0: rtA, rt1: rtB, polarity: run.polarity });
     var feats = det.features;
     feats.forEach(function (F, i) { F.id = i; F.massRaw = F.mass; });
+    /* 1b. an m/z offset beyond the calibration's reach (a file centroided
+       without its lock-mass correction): taken out of the data, and the
+       features found again */
+    var coarse = st.coarse === false ? null : coarseOffset(feats, run);
+    if (coarse && coarse.applied) {
+      say('Correcting an m/z offset of ' + coarse.ppm.toFixed(0) + ' ppm', 0.2);
+      shiftRun(run, coarse.ppm);
+      det = FT.detect(ms1, { rt0: rtA, rt1: rtB, polarity: run.polarity });
+      feats = det.features;
+      feats.forEach(function (F, i) { F.id = i; F.massRaw = F.mass; });
+    }
+    var lock = lockMass(run);
     tm.features = Date.now() - t0;
 
     /* 2. chemistry and reduction state */
@@ -6754,7 +6876,7 @@ SAC.pipeline = (function () {
       reduction: mode, redTest: redTest, focused: focused, deltas: recDeltas,
       openMods: open.mods, recurringFragments: open.frags, contaminants: contam,
       refs: { n: refRows.length, source: SAC.curated ? SAC.curated.VERSION : '' },
-      polarity: run.polarity || 'positive', polarityForced: !!run.polarityForced, lock: lock, customBlocks: C.customList(),
+      polarity: run.polarity || 'positive', polarityForced: !!run.polarityForced, lock: lock, coarse: coarse, customBlocks: C.customList(),
       customErrors: reg.errors, chosenLibrary: chosenLib ? chosenLib.id : null, libraryType: profile.type || 'mature',
       precursors: SAC.metrics.precursors ? SAC.metrics.precursors(rows, precOnly) : null, poolHint: poolHint(), ms2Mode: ms2Mode, ms2Used: !!mctx,
       rows: rows, unidentified: unident,
@@ -22611,7 +22733,7 @@ var APP = (function () {
   var LABELS = { home: 'Home', analyse: 'Analyse', compare: 'Compare', structure: 'Structure', library: 'Library', guide: 'Guide' };
   var DEFAULT_SETTINGS = { profile: 'auto', reduction: 'auto', fdr: 0.01, maxOligomer: '', tol: 'auto', ms2: true, uv: true, rt0: '', rt1: '', focused: true, refs: true,
                            autoLibs: false, polarity: 'auto' };
-  var NAME = 'MuroSense', VERSION = '3.25';
+  var NAME = 'MuroSense', VERSION = '3.26';
 
   var A = {
     NAME: NAME, VERSION: VERSION, runs: [], current: null, view: 'home', views: {},
@@ -23688,6 +23810,8 @@ APP.views.analyse = (function () {
       R.polarity === 'negative' ? h('span', { class: 'chip', title: 'Negative ions: analysed on the positive-ion m/z scale and shown at their own m/z' }, 'negative ions') : null,
       R.libraryType === 'precursors' ? h('span', { class: 'chip accent' }, 'precursors only') : (R.libraryType === 'both' ? h('span', { class: 'chip' }, '+ precursors') : null),
       c1.source === 'lock' ? h('span', { class: 'chip warn', title: 'Too few calibrants of its own; masses were corrected with the lock-spray ion only' }, 'lock-mass calibration') : null,
+      R.coarse && R.coarse.applied ? h('span', { class: 'chip warn', title: 'Every m/z in the file read ' + UI.signed(R.coarse.ppm, 0) + ' ppm off, as in a file centroided without its lock-mass correction; the offset was taken out before calibrating (see Quality). Reconverting the file with its lock-mass correction does the same from the instrument.' },
+        'm/z ' + UI.signed(R.coarse.ppm, 0) + ' ppm corrected') : null,
       c1.source === 'metabolites' ? h('span', { class: 'chip', title: 'No muropeptides to calibrate on: masses were corrected on metabolites and precursors found in the run (' + (c1.calibrants || []).join(', ') + ')' }, 'calibrated on metabolites') : null,
       c1.source === 'borrowed' ? h('span', { class: 'chip', title: 'No muropeptides to calibrate on: the m/z curve of ' + c1.borrowedFrom + ' was used, re-levelled on this run’s own calibrants' }, 'calibration from ' + c1.borrowedFrom) : null,
       run.source === 'example' ? h('span', { class: 'chip warn' }, 'example') : null,
@@ -23702,7 +23826,8 @@ APP.views.analyse = (function () {
         (R.muroLikePct === null || R.muroLikePct === undefined ?
           stat(UI.pct(R.assignedPct, 1), '%', 'of all MS signal identified', 'Without usable MS/MS, features cannot be sorted by a muropeptide fragment signature, so this is the share of all feature signal') :
           stat(UI.pct(R.muroLikePct, 1), '%', 'muropeptide signal explained', 'Share of the MS signal from features that fragment like muropeptides that is identified. All features: ' + UI.pct(R.assignedPct, 1) + '%')),
-      stat(c1.ok ? UI.fx(c1.sd, 1) : '–', 'ppm', 'mass error after calibration', c1.ok ? 'Before the run-specific correction: ' + UI.fx(c1.rmsBefore, 1) + ' ppm r.m.s.' : 'Calibration was not possible'),
+      stat(c1.ok ? UI.fx(c1.sd, 1) : '–', 'ppm', 'mass error after calibration', (c1.ok ? 'Before the run-specific correction: ' + UI.fx(c1.rmsBefore, 1) + ' ppm r.m.s.' : 'Calibration was not possible') +
+        (R.coarse && R.coarse.applied ? ' (after an offset of ' + UI.signed(R.coarse.ppm, 0) + ' ppm was taken out of the whole file)' : '')),
       R.libraryType === 'precursors' ? (function () {
         var P = R.precursors, top = P ? Object.keys(P.byKind).sort(function (a, b) { return P.byKind[b] - P.byKind[a]; })[0] : null;
         return stat(top ? UI.pct(P.byKind[top], 0) : '–', top ? '%' : '', top ? top.replace(/^Recycling: /, '') : 'no precursor found', 'The largest kind in the identified pool (MS); every kind is in Profile');
@@ -24518,6 +24643,15 @@ APP.tabs = (function () {
 
   /* ---------------- look up chosen structures ---------------- */
   var lookupText = UI.store.get('lookup', 'gm-AQKAA\ngm-AQK[AA]AA\ngm-AQKA=gm-AQK[AA]AA (4-3)\ngm(Anh)-AQK[AA]A');
+  /* a large m/z offset taken out before calibration, in words */
+  function coarseText(R) {
+    var K = R.coarse;
+    if (!K || !K.applied) return '';
+    return 'Every m/z in the file read ' + UI.signed(K.ppm, 0) + ' ppm off (beyond the ±40 ppm the calibration searches), as a file centroided without its lock-mass correction does; ' +
+      (K.source === 'lock' ? 'the lock-spray ' + (K.lock ? K.lock.ion : 'reference ion') + ' showed it, and ' + K.n + ' muropeptides agreed, ' :
+        K.n + ' muropeptide compositions agreed on it' + (K.lockAgrees ? ', as did the lock-spray ' + K.lock.ion + ' (' + UI.signed(K.lock.offset, 0) + ' ppm), ' : ', ') ) +
+      'so it was taken out of the data before the features were found and the usual calibration corrected the rest.';
+  }
   function lookup(run) {
     var R = run.result;
     var ta = h('textarea', { class: 'input', id: 'lookup-text', rows: 5, spellcheck: 'false', 'aria-label': 'Structures to look for' }, lookupText);
@@ -24583,6 +24717,11 @@ APP.tabs = (function () {
   function quality(run) {
     var R = run.result, c1 = R.cal1 || {}, c2 = R.cal2, F = R.fdr || {};
     var cards = [qcCard(run)];
+    /* a large offset taken out first */
+    if (R.coarse && R.coarse.applied) cards.push(card('Large m/z offset', [h('p', { class: 'callout warn' }, coarseText(R) +
+      ' Its size was found by matching the strongest features to the core muropeptides of every built-in chemistry within ±200 ppm, where the true offset gathers ' + R.coarse.n +
+      ' compositions and ' + UI.fx(R.coarse.ratio, 1) + '× the signal of any other' + (R.coarse.lock ? '; the lock-spray scans read ' + UI.signed(R.coarse.lock.offset, 1) + ' ppm (scatter ' + UI.fx(R.coarse.lock.sd, 1) + ' ppm, ' + R.coarse.lock.n + ' scans)' : '') +
+      '. Reconverting the file with its lock-mass correction (MassLynx Accurate Mass Measure, or msconvert’s lockmassRefiner filter) does the same from the instrument.')]));
     /* calibration */
     if (c1.points && c1.points.length) {
       var before = c1.points.map(function (p) { return [p[0], p[1]]; }), after = c1.points.map(function (p) { return [p[0], p[2]]; });
@@ -24727,6 +24866,7 @@ APP.tabs = (function () {
       (R.libraryType === 'precursors' ? '; nucleotide and lipid-linked precursors only, generated from the stem rules' : (R.libraryType === 'both' ? ', and the nucleotide and lipid-linked precursors generated from the same stem rules' : '')) +
       (cb ? '; with ' + cb + ' user-defined building block' + (cb > 1 ? 's' : '') : '') +
       (R.refs && R.refs.n ? '; ' + R.refs.n + ' curated literature structures were searched alongside' : '') + '). ' +
+      (R.coarse && R.coarse.applied ? 'A uniform m/z offset of ' + UI.signed(R.coarse.ppm, 0) + ' ppm (a file centroided without lock-mass correction) was first removed from all spectra, estimated from the strongest muropeptide matches within ±200 ppm' + (R.coarse.lockAgrees ? ' and confirmed by the lock-spray reference ion' : '') + '. ' : '') +
       (c1.ok && c1.source === 'metabolites' ? 'The m/z axis was corrected with a straight line through ' + c1.nMol + ' metabolites and precursors found in the run (' + (c1.calibrants || []).join(', ') + '; error ' + UI.fx(c1.rmsBefore, 1) + ' → ' + UI.fx(c1.rmsAfter, 1) + ' ppm r.m.s.), and features were matched within ±' + UI.fx(R.tol, 1) + ' ppm. ' :
        c1.ok && c1.source === 'borrowed' ? 'The m/z axis was corrected with the calibration curve of ' + c1.borrowedFrom + ' from the same session, re-levelled (' + UI.signed(c1.offset, 1) + ' ppm) on ' + c1.nMol + ' calibrants found in this run, and features were matched within ±' + UI.fx(R.tol, 1) + ' ppm. ' :
        c1.ok && c1.source === 'lock' ? 'The m/z axis was corrected with the lock-spray reference ion (' + (R.lock && R.lock.ion ? R.lock.ion : 'lock mass') + '; offset and retention-time drift), and features were matched within ±' + UI.fx(R.tol, 1) + ' ppm. ' :
@@ -25272,7 +25412,8 @@ APP.exports = (function () {
       ['Reducing ends', R.reduction], ['Ion polarity', (R.polarity || 'positive') + (R.polarityForced ? ' (set by hand)' : ' (from the file)')],
       ['Library type', R.libraryType || 'mature'], ['Custom building blocks', R.customBlocks ? (R.customBlocks.mods || []).map(function (m) { return m.code + ' ' + m.formula; }).concat((R.customBlocks.residues || []).map(function (r) { return r.code + ' ' + r.formula; })).join('; ') : ''],
       ['FDR', R.settings.fdr], ['Mass tolerance (ppm)', R.tol], ['Calibration source', c1.source === 'lock' ? 'lock mass (too few internal anchors)' : c1.source === 'metabolites' ? 'metabolites and precursors in the run: ' + (c1.calibrants || []).join(', ') : c1.source === 'borrowed' ? 'curve of ' + c1.borrowedFrom + ', re-levelled by ' + UI.fx(c1.offset, 1) + ' ppm' : 'internal (identified muropeptides)'],
-      ['Lock mass', R.lock ? (R.lock.ok ? R.lock.ion + ': offset ' + (+R.lock.offset).toFixed(2) + ' ppm, ' + R.lock.n + ' scans' : R.lock.reason) : ''], ['Calibration spread after (ppm)', c1.sd],
+      ['Lock mass', R.lock ? (R.lock.ok ? R.lock.ion + ': offset ' + (+R.lock.offset).toFixed(2) + ' ppm, ' + R.lock.n + ' scans' : R.lock.reason) : ''],
+      ['m/z offset removed before calibration (ppm)', R.coarse && R.coarse.applied ? R.coarse.ppm : 0], ['Calibration spread after (ppm)', c1.sd],
       ['Calibration error before (ppm rms)', c1.rmsBefore], ['Calibration error after (ppm rms)', c1.rmsAfter], ['Calibration anchors', c1.points ? c1.points.length : ''],
       ['Calibration terms', c1.terms && c1.terms.length ? APP.tabs.termList(c1.terms) : ''],
       ['Calibration started from', !c1.ok || c1.source === 'lock' ? '' : !R.calBoot || !R.calBoot.chosen || R.calBoot.chosen === 'full' ? 'the whole search space' : R.calBoot.chosen === 'core' ? 'the core of the search space' :
@@ -30781,6 +30922,7 @@ APP.views.guide = (function () {
         [h('b', null, 'Calibration. '), 'Confident matches act as internal calibrants (only species made of the chemistry’s defining units, not its minor variants): the m/z error is modelled as a smooth function of m/z, retention time, charge state and intensity, then removed. Beyond the last calibrant the m/z curve keeps the slope a time-of-flight error has (linear in 1/√m/z) instead of stopping flat. Every molecule seen in two or more charge states is a second check: its ions must give one mass once corrected, which sets how the error depends on charge and how far the curve climbs past the calibrants -- exactly where trimers and tetramers sit. Saturated ions are read from their M+1 and M+2 isotopes, in calibration and correction alike. A run that started 15 ppm off ends within about 1 ppm, and the charge states of large oligomers agree. ' +
           'A broad chemistry (a large library, or one chosen by hand that only partly fits) can mislead the first curve, because many features then have several candidates; when the first curve looks weak, two more are tried -- one on the chemistry’s core (its least-modified monomers and dimers) and one borrowed from the built-in chemistry that fits the run best -- and another curve replaces the run’s own only when it explains clearly more signal net of its decoys (a fifth more or beyond).'],
         [h('b', null, 'Lock mass. '), 'When the file holds lock-spray scans, the reference ion (leucine-enkephalin or Glu-fibrinopeptide B) is measured in them. It is a check on the calibration, and the fallback when a run has too few muropeptides to calibrate on (precursor-only libraries, sparse samples). Lock-spray scans stored without the instrument’s own calibration sit hundreds of ppm off and are reported as unusable.'],
+        [h('b', null, 'A large offset. '), 'A file centroided without its lock-mass correction can read 50 to 150 ppm off, beyond the ±40 ppm the calibration searches, and then nothing is found. Before calibrating, MuroSense matches the strongest features to the core muropeptides of every chemistry within ±200 ppm: when one offset beyond ±30 ppm gathers clearly more of them than any other (and more than no offset at all), it is taken out of every spectrum, the features are found again, and the usual calibration corrects the rest. The lock-spray ion, read in the same wide window, confirms it, or supplies it when the run holds few muropeptides (only if the run’s own features agree). The run then shows a chip “m/z −94 ppm corrected”, and Quality explains it. Well-calibrated files are left as they are.'],
         [h('b', null, 'Search. '), 'Every feature is matched against all monomers and dimers the chemistry allows; then trimers to hexamers are built from the units actually seen (minor variants, such as Gram-negative stems without their disaccharide or with de-N-acetylated GlcNAc, stay in monomers and dimers). Each match is scored on mass error, isotope pattern, charge states, peak shape, in-source relatives and MS/MS.'],
         [h('b', null, 'Decoys and FDR. '), 'The same search is run against the space shifted by ±7 and ±13 Da. Decoy hits measure how often chance alone wins, and set the score at which the false discovery rate reaches the chosen level.'],
         [h('b', null, 'Focused search. '), 'Features still unexplained are matched against the identified compositions and their close relatives (one oligomer rung, one reducing end, one acetyl, one alanine, anhydro or not), with decoys and an FDR of their own. This recovers isomers and larger oligomers the broad space cannot separate from chance.'],
@@ -30931,7 +31073,7 @@ APP.views.guide = (function () {
         'For other stems, copy a pool into a library (Library, New, start from the pool) and change its stem rules.'),
       p('Masses of a precursor-only run are still corrected on the mature muropeptides the rules make (a cytoplasmic extract usually holds some), on the listed precursors, or, failing both, on the lock mass. In the high-energy channel, UMP, UDP and uracil ions mark a nucleotide precursor; these ions are computed from their formulas, not taken from reference spectra.'),
       p(h('b', null, 'Negative ions. '), 'Lipid-linked and nucleotide precursors ionise better in negative mode. Negative-ion files are read directly: deprotonated ions, and formate and chloride adducts, are recognised. If the file does not say its polarity, set it under Ion polarity in Analyse.'),
-      p(h('b', null, 'Lock mass. '), 'Quality shows the lock-spray check: the reference ion’s offset, drift and scatter, and whether it was used. Waters files often store lock-spray scans without the instrument calibration; MuroSense then says so and relies on its own calibration.')]));
+      p(h('b', null, 'Lock mass. '), 'Quality shows the lock-spray check: the reference ion’s offset, drift and scatter, and whether it was used. Waters files often store lock-spray scans without the instrument calibration; MuroSense then says so and relies on its own calibration. A file whose every m/z reads tens of ppm off (centroided without its lock-mass correction) is corrected before calibrating; the run shows a chip such as “m/z −94 ppm corrected”, and Quality says how the offset was found.')]));
 
     body.appendChild(sec('limits', 'What it cannot do', [
       li([
