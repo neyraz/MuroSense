@@ -22733,7 +22733,7 @@ var APP = (function () {
   var LABELS = { home: 'Home', analyse: 'Analyse', compare: 'Compare', structure: 'Structure', library: 'Library', guide: 'Guide' };
   var DEFAULT_SETTINGS = { profile: 'auto', reduction: 'auto', fdr: 0.01, maxOligomer: '', tol: 'auto', ms2: true, uv: true, rt0: '', rt1: '', focused: true, refs: true,
                            autoLibs: false, polarity: 'auto' };
-  var NAME = 'MuroSense', VERSION = '3.26';
+  var NAME = 'MuroSense', VERSION = '3.27';
 
   var A = {
     NAME: NAME, VERSION: VERSION, runs: [], current: null, view: 'home', views: {},
@@ -30871,7 +30871,7 @@ APP.views.guide = (function () {
     ['start', 'Start here'], ['workspace', 'The Analyse workspace'], ['pipeline', 'What happens to a run'], ['reading', 'Reading a result'],
     ['drawings', 'Structure drawings'], ['confidence', 'How sure is a call?'], ['quant', 'MS and UV abundances'], ['compare', 'Comparing samples'], ['saving', 'Saving and the bundle'], ['pglang', 'Writing structures'],
     ['chem', 'Chemistries'], ['library', 'Building a library'], ['leads', 'When nothing fits'], ['precursors', 'Precursors, negative ions, lock mass'], ['limits', 'What it cannot do'],
-    ['check', 'Self-check'], ['refs', 'References']
+    ['glossary', 'Words on screen'], ['check', 'Self-check'], ['refs', 'References']
   ];
   function p() { return h.apply(null, ['p', null].concat([].slice.call(arguments))); }
   function sec(id, title, kids) { return h('section', { id: 'g-' + id, class: 'prose' }, h('h3', null, title), kids); }
@@ -30960,6 +30960,7 @@ APP.views.guide = (function () {
     body.appendChild(sec('quant', 'MS and UV abundances', [
       p('MS areas add up every charge state and adduct of a species. They are fast and sensitive, but they inherit differences in ionisation: large oligomers and hydrophobic species may ionise differently from small ones.'),
       p('UV absorbance at 205 nm comes from peptide bonds and N-acetyl groups and scales with the number of disaccharide-peptide units, which is why it is the classical basis of muropeptide quantification (Glauner, 1988). When species co-elute, a UV peak holds several of them. MuroSense does not split peaks by area ratios; it fits the UV trace as the sum of each species’ own MS elution profile, plus a smooth background for the unresolved hump. Every species gets the UV area its profile accounts for, and features not identified take their own share instead of inflating a neighbour.'),
+      p(h('b', null, 'UV delay. '), 'The UV detector sits between the column and the mass spectrometer, so each peak passes it a few seconds before it reaches the ion source: the UV trace runs slightly ahead of the MS. Before the UV is shared out, MuroSense finds that lag by sliding the UV trace against the summed MS elution profile of the identified species, up to 18 s either way, and keeping the shift where the two match best (the highest correlation, r). Each species’ UV is then read at its MS retention time minus the delay, and the chromatogram draws the UV moved by it, on the MS time axis. The summary shows it as UV delay, in seconds; Quality (the UV trace card) plots the correlation against the delay with the chosen one marked; Methods and Excel record it. A delay of a few seconds with r close to 1 is normal. A low r, or a delay at the very edge of the ±18 s searched, means the two traces do not line up well (little UV signal, few species identified, or a long tube between the detectors), so check the UV split in the evidence before relying on the UV columns.'),
       p('Two guards keep the split honest. The injection peak at the start of the run is left out of the muropeptide window when it towers over everything after it. And no species may take more than five times the UV its MS signal predicts, scaled on the run’s own UV-to-MS ratio, so a trace species eluting under a large peak cannot take that peak over; a species held at this limit is marked capped in its evidence.'),
       p('The profile metrics follow Glauner: oligomer percentages are molar (UV areas are divided by the number of stems), cross-linkage is the number of peptide cross-links per stem (equal to ½ dimers + ⅔ trimers + ¾ tetramers applied to the % of units), and is also given as that formula applied to the molar % of muropeptides, as some studies apply it to their abundance tables, so a value can be set beside theirs; chain length is the number of disaccharide units per 1,6-anhydro end. Where MS and UV agree, the profile does not depend on ionisation.'),
       p(h('b', null, 'Non-canonical amino acids. '), 'A residue other than the standard stem’s (L-Ala at 1, D-iGlu or iGln at 2, a diamino acid such as mDAP, Lys or Orn at 3, D-Ala at 4 and 5; D-Lac at 5 counts as standard) is named in the short name by residue and position: Tetra(Met4), Penta(Leu/Ile5), Tetra–Tetra(Phe4), Tetra(Anh,Arg4). Leu and Ile have the same mass, so they are written Leu/Ile. Residues at 4 and 5 are D in these chemistries, so the D- is left out. The same rule holds for every chemistry, and analyses saved before get the new names when they open. ', h('i', null, 'Non-canonical amino acids, % of units'), ' in the profile metrics gives the share of stems carrying one (a stem counts once), at position 4, at 5 and at 1 to 3, and each residue on its own. Gly is not counted there; it keeps its own row (Gly at position 4 or 5). Rows that are zero in every sample are not shown. Which position an isomer’s residue sits at (Penta(Lys5) or Penta(Lys4), the same composition) is the arrangement the identification gives, settled by MS/MS when it can be. A residue the chemistry does not search for is not identified, so it is not counted; it shows under Unexplained, where the open search reports it as a mass shift.')]));
@@ -31088,6 +31089,92 @@ APP.views.guide = (function () {
         'Keep your libraries if you clear the browser’s data: they live in this browser until you export them to a file.',
         'Replace your judgement for a single important call: open its evidence.'])]));
 
+    /* every label on screen that the sections above do not explain, so the
+       search box finds each one; the quality checks come from the checklist
+       itself (APP.tabs.QC), so their thresholds here cannot drift from it */
+    function gl(t, d) { return [h('b', null, t + '. '), d]; }
+    function gh(t) { return h('h4', { style: { margin: '18px 0 4px' } }, t); }
+    var qcList = ((APP.tabs && APP.tabs.QC) || []).map(function (q) { return gl(q.label, q.tip); });
+    body.appendChild(sec('glossary', 'Words on screen', [
+      p('The labels you meet on the screens, each with a line on what it means. Pointing at most labels in MuroSense also shows a short tip, and the search box at the top of this Guide finds any of them.'),
+      gh('Search settings (left of Analyse)'),
+      li([
+        gl('Chemistry', 'Which peptidoglycan chemistry is searched: its residues, stems, bridges and modifications (see Chemistries). Automatic tries every built-in chemistry and keeps the one that explains the most signal beyond what its own decoys explain.'),
+        gl('Automatic also tries my libraries', 'Your saved libraries (except precursor-only ones) compete with the built-in chemistries under the same rules; a larger one has to earn its extras.'),
+        gl('Ion polarity', 'From the file reads it from the mzML; Positive or Negative ions overrides it.'),
+        gl('Reducing ends', 'Whether the MurNAc at the reducing end was reduced to muramitol with sodium borohydride (NaBH₄) before the LC-MS. Automatic tests the run; Partly reduced (both forms) searches every species both ways.'),
+        gl('FDR', 'False discovery rate: the share of the reported species allowed to be wrong, estimated from decoys (see How sure is a call?). 1% unless changed.'),
+        gl('Largest oligomer', 'The most stems one species may hold: 2 for dimers, 3 for trimers, and so on. Auto uses the chemistry’s own limit.'),
+        gl('Mass tolerance', 'How far a measured mass may lie from the computed one. Automatic sets it from the spread left after calibration; 5, 10 or 20 ppm fixes it.'),
+        gl('Retention window', 'Only this stretch of the run, from start to end in minutes, is searched; left empty, the whole run is. Useful to leave out the wash at the end.'),
+        gl('Use MS/MS (MSᴱ high-energy) evidence', 'Fragments in the high-energy scans support each identification and can tell arrangements apart. Off, only the intact masses (MS1) are used.'),
+        gl('Use the UV trace', 'The UV channel is integrated and shared out between the species (see MS and UV abundances). Off, abundances come from MS alone.'),
+        gl('Focused second search', 'Matches still-unexplained features against the identified compositions and their direct relatives, with its own decoys and FDR. Species found this way are tagged focused.'),
+        gl('Also search the curated reference structures', 'Adds the literature muropeptides of the curated reference list that go with the chemistry, searched exactly as written.')]),
+      gh('Summary and chromatogram'),
+      li([
+        gl('UV delay', 'How many seconds the UV trace runs ahead of the MS (see UV delay under MS and UV abundances).'),
+        gl('m/z … ppm corrected', 'Every m/z in the file was off by more than the calibration searches (a file centroided without its lock-mass correction), so the offset was taken out first; the Large m/z offset card in Quality explains it.'),
+        gl('TIC', 'Total ion current: the summed intensity of every ion in each low-energy (MS1) scan.'),
+        gl('Base peak', 'The intensity of the strongest ion in each scan. Sharper than the TIC when the background is high.'),
+        gl('High-energy TIC', 'The total ion current of the MSᴱ high-energy scans (dashed), where the fragments are.'),
+        gl('UV background', 'The smooth background fitted under the UV peaks (dotted): the unresolved hump and the baseline drift. It is not counted in any species’ UV area.'),
+        gl('MSᴱ used, MS1 only', 'Whether fragment evidence was used for this run. With MS1 only, far fewer species pass a strict FDR; 5% is a reasonable screen for such data.'),
+        gl('MS/MS-supported', 'Above the Species table: shows only species whose fragments in the high-energy scans support the structure (p < 0.01).')]),
+      gh('Tags in the Species table'),
+      li([
+        gl('MS/MS favours', 'Fragments favour this arrangement over the others with the same composition, without excluding them. MS/MS resolves isomer means fragments unique to it were found.'),
+        gl('ref: name', 'Same composition as a structure in the curated reference list; the name is the literature one (point at the tag for its number and other names).'),
+        gl('elutes with #n', 'Elutes as one with species #n of another size (same apex and profile): one may be an in-source fragment, adduct or cluster of the other. Open its evidence.'),
+        gl('single ion', 'Seen as one ion without its M+1 isotope, which at this intensity would sit below the noise; the mass, peak shape and any fragments carry the identification.'),
+        gl('targeted', 'Found by extracting its expected ions directly, with the same done at the decoy masses.'),
+        gl('saturated', 'The detector saturated on this ion: its mass is read from its other charge states or isotopes, and its MS share is underestimated (the UV is not affected). Injecting less avoids it.')]),
+      gh('Analyse tabs'),
+      li([
+        gl('Look up', 'Type structures in PGLang, one per line; every feature of the run, identified or not, is searched for them at each reducing-end state the run allows. A match that did not pass the FDR is shown as such, to check in its evidence.'),
+        gl('Quality', 'How far the run and its result can be trusted: the checklist (below) and one card per step: m/z calibration, high-energy calibration, lock mass, laboratory contaminants, chemistry and reduction, scores of targets and decoys, the UV trace and the run itself.'),
+        gl('Methods', 'A paragraph for the methods section of a paper, written from this run’s settings and results, with its references; Copy paragraph copies it.')]),
+      gh('Quality tab'),
+      li([
+        gl('Large m/z offset', 'Shown only when the file’s masses were all far off: how big the offset was and how it was found.'),
+        gl('m/z calibration', 'The mass error of the calibrant ions before (grey) and after (colour) correction, against m/z.'),
+        gl('High-energy (MSᴱ) calibration', 'The same for the fragment scans, which are corrected separately.'),
+        gl('Chemistry tried', 'Each chemistry Automatic compared. Net signal explained is the signal it explains minus what its own decoys explain, scaled to the best one (highlighted, and used); Features is how many features it matched.'),
+        gl('Scores of targets and decoys', 'How well each feature’s best real match (target) and best decoy match score. Decoys are drawn at a quarter of their count (÷4, as four decoy copies are searched); the line is the score at which the estimated FDR reaches the chosen level.'),
+        gl('UV trace', 'The correlation between the UV and MS traces at each delay (the peak is the UV delay), and how well the species’ MS profiles reproduce the UV (R²).'),
+        gl('Function, Role', 'The scan functions in the file and what each was used for: low energy (MS1), high energy (MSᴱ) or data-dependent MS/MS, reference (lock mass), UV, or not used.')]),
+      gh('Quality checklist (Quality tab and Compare); each check is graded good, check or poor'),
+      qcList.length ? li(qcList) : null,
+      gh('Unexplained'),
+      li([
+        gl('What the unexplained features have in common', 'Leads to building blocks the chemistry may be missing, seen three ways: Open modification search (a mass added to an identified species, placed where its fragments allow), Repeated mass differences, and Recurring fragment ions.'),
+        gl('Δ mass and Chance', 'A mass difference that links several unexplained features to identified species (or to each other). Chance is how often differences just beside it occur, so a difference far above its chance is likely a missing building block.'),
+        gl('Signature: GlcNAc loss, oxonium', 'The high-energy scans show a GlcNAc oxonium ion and a loss of GlcNAc from this feature’s own mass, both co-eluting with it: it fragments like a muropeptide. Background ions (PEG, plasticisers, peptides) give neither.'),
+        gl('muropeptide-like only', 'In Compare’s Unexplained features across samples: shows only features with that signature.'),
+        gl('Missing from a sample, or uneven', 'Features absent from at least one sample, or whose largest share is three or more times the mean of the other samples. In one sample only, In every sample and All show the other groups.'),
+        gl('± min', 'How close in retention time a feature must be in two samples (and within ± 5 ppm in mass) to count as the same one.')]),
+      gh('Compare'),
+      li([
+        gl('Low below …% of the median (or the reference)', 'Total PG: samples whose total PG falls below this share of the median sample, or of the reference when one is chosen, are marked low.'),
+        gl('Mean at least …%', 'The species table shows only species whose mean share across the samples reaches this value.'),
+        gl('Presence (default)', 'In the stacked chromatograms, the shades down the stack are grey for species in every sample and red for those missing from some. The other choices colour them by oligomer, stem length or a structural feature, as in the profile metrics.'),
+        gl('Match peaks ± min', 'Stacked chromatograms: peaks of one composition that elute within this many minutes of each other (after any shift between the samples) are taken for one species.'),
+        gl('Dots: every sample, only those far from the rest', 'Distributions: draws every sample as a dot, or only the samples far from the rest (see Distributions under Comparing samples for the rule) and those named.'),
+        gl('Ticked metrics', 'In At a glance: the metrics ticked in the metric table, shown together in one chart.'),
+        gl('Row z-score, Row 0–1', 'Heat-map colours: each row as standard deviations from its own mean, or stretched from its lowest (0) to its highest (1) value.')]),
+      gh('Library and Structure'),
+      li([
+        gl('Built-in chemistries, Cytoplasmic pools', 'The chemistries that come with MuroSense. The pools are for a soluble (cytoplasmic) extract rather than sacculi: the UDP-sugars and UDP-MurNAc-peptides of the Mur pathway, lipid I and II, and the recycling products. Automatic does not try them; choose one by hand.'),
+        gl('Reference list (Curated muropeptides)', 'Muropeptides from the literature, with their names and organisms.'),
+        gl('Also searched as listed', 'Structures a chemistry searches exactly as written, beside those its rules generate.'),
+        gl('PGFinder masses', 'Saves the structures and their monoisotopic masses in the PGFinder database format, to use the same search space in PGFinder.'),
+        gl('Use for analyses', 'Makes this chemistry the one new analyses search; re-analyse the open run to apply it there.'),
+        gl('Typical structures', 'The commonest monomer and dimer the chemistry’s rules generate, drawn.'),
+        gl('Monoisotopic mass, Average mass', 'The mass with the lightest isotope of every element (what the mass spectrometer measures as the first isotope peak), and the mass from average atomic weights (what a balance weighs).'),
+        gl('What could this mass be?', 'Searches monomers, dimers, chains and larger oligomers of each chemistry’s commonest units for a mass or m/z you type; the Unexplained tab sends masses here with Resolve.'),
+        gl('Cuts', 'In the Fragment ions table: how many bonds were broken to make the ion (0 for the intact molecule).'),
+        gl('Fragment types', 'precursor: the intact molecule; oxonium: a single GlcNAc sugar ion (204.087 and its water losses); sugar: sugar-only pieces; Y: the molecule after losing sugar from the non-reducing end, keeping the reducing end; lactyl: a peptide still carrying MurNAc’s lactyl group; peptide: stem peptide pieces; bridge: cross-bridge pieces only; xlink: one half of an oligomer cut at its cross-link; glycopeptide: sugar with part of the peptide.')])]));
+
     var checkOut = h('div');
     body.appendChild(sec('check', 'Self-check', [
       p('Recomputes reference muropeptide masses from residue sums and compares them with the structure engine, then re-derives every bundled example species from its name.'),
@@ -31164,6 +31251,12 @@ APP.views.guide = (function () {
         if (!(title && title.textContent.toLowerCase().indexOf(w) >= 0)) {
           UI.$$('p, li, tbody tr, dt, dd', sec).forEach(function (el) { if (el.textContent.toLowerCase().replace(/\s+/g, ' ').indexOf(w) < 0) hide(el); });
           UI.$$('table', sec).forEach(function (t) { if (!UI.$$('tbody tr', t).some(function (r) { return !r.hidden; })) hide(t.closest('.tbl-wrap') || t); });
+          /* a sub-heading whose list kept no line goes too (Words on screen) */
+          UI.$$('h4', sec).forEach(function (hd) {
+            var ls = hd.nextElementSibling;
+            if (hd.textContent.toLowerCase().indexOf(w) >= 0 || !ls || !/^(UL|OL)$/.test(ls.tagName)) return;
+            if (!UI.$$('li', ls).some(function (x) { return !x.hidden; })) { hide(hd); hide(ls); }
+          });
         }
         mark(sec, w);
       });
