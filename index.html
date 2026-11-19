@@ -18,7 +18,7 @@
    components. Every colour comes from a token so both themes stay readable.
    ========================================================================== */
 :root {
-  --bg: #f3f4f1; --panel: #ffffff; --panel-2: #f8f9f7; --sunk: #eef0ec;
+  --bg: #f3f4f1; --panel: #ffffff; --panel-2: #f8f9f7; --sunk: #eef0ec; --raised: #ffffff;
   --ink: #172124; --ink-2: #3a4649; --muted: #63706d; --faint: #8a9592;
   --line: #dbe0dc; --line-2: #e8ebe7;
   --accent: #0b6870; --accent-ink: #ffffff; --accent-soft: #dcecec; --accent-line: #9cc9cb;
@@ -38,7 +38,7 @@
 }
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
-    --bg: #0e1314; --panel: #161d1f; --panel-2: #1a2224; --sunk: #12181a;
+    --bg: #0e1314; --panel: #161d1f; --panel-2: #1a2224; --sunk: #12181a; --raised: #1d2629;
     --ink: #e4eae8; --ink-2: #c2cbc9; --muted: #92a09d; --faint: #6f7d7a;
     --line: #2a3437; --line-2: #212a2d;
     --accent: #4db1b9; --accent-ink: #052124; --accent-soft: #15302f; --accent-line: #2e6266;
@@ -54,7 +54,7 @@
   }
 }
 :root[data-theme="dark"] {
-  --bg: #0e1314; --panel: #161d1f; --panel-2: #1a2224; --sunk: #12181a;
+  --bg: #0e1314; --panel: #161d1f; --panel-2: #1a2224; --sunk: #12181a; --raised: #1d2629;
   --ink: #e4eae8; --ink-2: #c2cbc9; --muted: #92a09d; --faint: #6f7d7a;
   --line: #2a3437; --line-2: #212a2d;
   --accent: #4db1b9; --accent-ink: #052124; --accent-soft: #15302f; --accent-line: #2e6266;
@@ -421,14 +421,20 @@ th.refcol, td.refcol { background: color-mix(in srgb, var(--accent) 7%, transpar
 .cc.none, .cc.more { border-style: dashed; color: var(--muted); }
 .cc.hl { box-shadow: 0 0 0 2px var(--accent); }
 .cc-tbl th, .cc-tbl td { vertical-align: top; }
-.cc-tbl .cc-name { position: sticky; left: 0; background: var(--panel); z-index: 1; min-width: 180px; max-width: 220px; text-align: left; box-shadow: 1px 0 0 var(--line-2); white-space: normal; }
+.cc-tbl .cc-name { position: sticky; left: 0; background: var(--raised, var(--panel)); z-index: 1; min-width: 180px; max-width: 220px; text-align: left; box-shadow: 1px 0 0 var(--line-2); white-space: normal; }
 .cc-tbl .cc-name .tiny { overflow-wrap: anywhere; font-weight: 400; }
 .cc-tbl tbody tr:nth-child(even) td, .cc-tbl tbody tr:nth-child(even) .cc-name { background: var(--panel-2); }
-.cc-tbl thead th { position: sticky; top: 0; background: var(--panel); z-index: 2; white-space: nowrap; }
+.cc-tbl thead th { position: sticky; top: 0; background: var(--raised, var(--panel)); z-index: 2; white-space: nowrap; }
 .cc-tbl thead th.cc-name { z-index: 3; }
 .cc-tbl tr.pool .cc-name { background: var(--panel-2); }
 .cc-tbl .linkish { font-weight: 600; }
 .cc-scroll { max-height: 62vh; overflow: auto; }
+.cc-body { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+.cc-bar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 8px 10px; border: 1px solid var(--line); border-radius: var(--r); background: var(--panel-2); font-size: 13px; }
+.cc-bar.on { border-color: var(--accent-line); background: var(--accent-soft); }
+.cc-namerow { display: flex; gap: 8px; align-items: flex-start; }
+.cc-namerow input { margin-top: 3px; flex: none; }
+.cc-tbl tr.cc-group td { padding-top: 14px; background: var(--raised, var(--panel)) !important; }
 .cc-none { color: var(--faint); }
 .cc-uniq-list { display: grid; gap: 6px; }
 .cc-uniq { display: grid; grid-template-columns: 160px minmax(0, 1fr); gap: 8px; align-items: baseline; font-size: 12.5px; }
@@ -559,12 +565,16 @@ th.refcol, td.refcol { background: color-mix(in srgb, var(--accent) 7%, transpar
 .choice h3 { margin: 0; font-size: 15px; }
 .choice p { margin: 0; font-size: 13px; color: var(--ink-2); }
 .choice .row { justify-content: flex-end; flex-wrap: wrap; gap: 8px; }
-.modal-back { position: fixed; inset: 0; background: rgba(0,0,0,.38); z-index: 72; display: flex; align-items: flex-start; justify-content: center;
+.modal-back { position: fixed; inset: 0; background: rgba(4,8,9,.62); -webkit-backdrop-filter: blur(3px); backdrop-filter: blur(3px); z-index: 72; display: flex; align-items: flex-start; justify-content: center;
   padding: max(16px, 4vh) var(--gutter-r) 16px var(--gutter-l); }
-.modal { background: var(--panel); color: var(--ink); border: 1px solid var(--line); border-radius: var(--r); box-shadow: 0 12px 40px rgba(0,0,0,.28);
+/* a dialog stands clear of the page behind it: a raised surface, an accent
+   border with a soft ring, and a deeper shadow */
+.modal { background: var(--raised, var(--panel)); color: var(--ink); border: 1.5px solid var(--accent-line); border-radius: var(--r);
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 14%, transparent), 0 20px 60px rgba(0,0,0,.55);
   width: min(780px, 100%); max-height: calc(100vh - max(32px, 8vh)); display: flex; flex-direction: column; min-height: 0; }
 .modal.wide { width: min(1280px, 100%); }
-.modal-h { display: flex; gap: 10px; align-items: flex-start; padding: 14px 16px 12px; border-bottom: 1px solid var(--line-2); flex: none; }
+.modal-h { display: flex; gap: 10px; align-items: flex-start; padding: 14px 16px 12px; border-bottom: 1px solid var(--accent-line); flex: none;
+  background: var(--accent-soft); border-radius: var(--r) var(--r) 0 0; }
 .modal-h .t { flex: 1 1 auto; min-width: 0; }
 .modal-h h3 { margin: 0; font-size: 1.05rem; }
 .modal-h p { margin: 2px 0 0; }
@@ -21362,6 +21372,26 @@ UI.plot = (function () {
     var d = st >= 1 ? 0 : Math.min(4, Math.ceil(-Math.log10(st)));
     return v.toFixed(d);
   }
+  /* Large numbers on a value axis (an intensity, an area), written the way
+     the viewer chose: 2×10⁵ (the default), 2 with ×10⁵ once at the top of
+     the axis, 2.0E5, or 200k. One power of ten serves the whole axis, from
+     its largest tick; an axis that stays below 10⁴ keeps plain numbers. */
+  var NUM_STYLES = [['pow', 'Axis 2×10⁵'], ['factor', 'Axis 2 (×10⁵)'], ['e', 'Axis 2.0E5'], ['si', 'Axis 200k']];
+  function numStyle() { var v = UI.store.get('axisNum', 'pow'); return NUM_STYLES.some(function (x) { return x[0] === v; }) ? v : 'pow'; }
+  var SUP = { '0': '⁰', '1': '¹', '2': '²', '3': '³', '4': '⁴', '5': '⁵', '6': '⁶', '7': '⁷', '8': '⁸', '9': '⁹', '-': '⁻' };
+  function sup(n) { return String(n).split('').map(function (ch) { return SUP[ch] || ch; }).join(''); }
+  function axisLabels(tks, st, style) {
+    style = style || numStyle();
+    var top = tks.reduce(function (a, t) { return Math.max(a, Math.abs(t)); }, 0);
+    if (style === 'si' || !(top >= 1e4)) return { labels: tks.map(function (t) { return tickLabel(t, st); }), note: '' };
+    var e = Math.floor(Math.log10(top) + 1e-9), p = Math.pow(10, e);
+    var d = Math.max(0, Math.min(3, Math.ceil(-Math.log10(st / p) - 1e-9)));
+    var mant = function (t) { return (t / p).toFixed(d); };
+    var zero = function (t) { return Math.abs(t) < st * 1e-6; };
+    if (style === 'factor') return { labels: tks.map(function (t) { return zero(t) ? '0' : mant(t); }), note: '×10' + sup(e) };
+    if (style === 'e') return { labels: tks.map(function (t) { return zero(t) ? '0' : (t / p).toFixed(Math.max(1, d)) + 'E' + e; }), note: '' };
+    return { labels: tks.map(function (t) { return zero(t) ? '0' : mant(t) + '×10' + sup(e); }), note: '' };
+  }
   function col(c) { return c && c.indexOf('--') === 0 ? 'var(' + c + ')' : c; }
 
   /* ---------------- canvas chromatogram ---------------- */
@@ -21440,11 +21470,14 @@ UI.plot = (function () {
       var yt = ticks(0, m, 4), left = ax === 'ms';
       c.textAlign = left ? 'right' : 'left'; c.textBaseline = 'middle';
       c.fillStyle = ax === 'uv' ? css('--uv') : muted;
-      yt.forEach(function (t) {
+      var yl = axisLabels(yt, niceStep(m, 4));
+      yt.forEach(function (t, i) {
         var py = g.t + ph - t / m * ph;
         if (left) { c.strokeStyle = line2; c.beginPath(); c.moveTo(g.l, Math.round(py) + .5); c.lineTo(g.l + pw, Math.round(py) + .5); c.stroke(); }
-        c.fillText(tickLabel(t, niceStep(m, 4)), left ? g.l - 6 : g.l + pw + 6, py);
+        c.fillText(yl.labels[i], left ? g.l - 6 : g.l + pw + 6, py);
       });
+      /* the power of ten, once, above the axis, out of the way of the species names */
+      if (yl.note) c.fillText(yl.note, left ? g.l - 6 : g.l + pw + 6, g.t - 12);
     });
     c.strokeStyle = line; c.beginPath(); c.moveTo(g.l + .5, g.t); c.lineTo(g.l + .5, g.t + ph + .5); c.lineTo(g.l + pw, g.t + ph + .5); c.stroke();
     /* series */
@@ -21754,10 +21787,13 @@ UI.plot = (function () {
     });
     if (!o.noY) {
       var yt = ticks(yr[0], yr[1], o.yticks || 4), yst = niceStep(yr[1] - yr[0], o.yticks || 4);
-      yt.forEach(function (t) {
+      var yl = o.yfmt ? { labels: yt.map(o.yfmt), note: '' } : axisLabels(yt, yst);
+      yt.forEach(function (t, i) {
         g.appendChild(s('line', { x1: F.m.l, x2: F.m.l + F.pw, y1: ys(t), y2: ys(t), style: { stroke: 'var(--line-2)' } }));
-        g.appendChild(s('text', { x: F.m.l - 5, y: ys(t) + 3, 'text-anchor': 'end' }, o.yfmt ? o.yfmt(t) : tickLabel(t, yst)));
+        g.appendChild(s('text', { x: F.m.l - 5, y: ys(t) + 3, 'text-anchor': 'end' }, yl.labels[i]));
       });
+      /* ×10ⁿ once for the axis: with its title when it has one, else above it */
+      if (yl.note) { if (o.ylabel) o = Object.assign({}, o, { ylabel: o.ylabel + ' (' + yl.note + ')' }); else g.appendChild(s('text', { x: F.m.l - 5, y: Math.max(9, F.m.t - 3), 'text-anchor': 'end' }, yl.note)); }
     }
     g.appendChild(s('line', { x1: F.m.l, x2: F.m.l + F.pw, y1: F.m.t + F.ph, y2: F.m.t + F.ph, style: { stroke: 'var(--line)' } }));
     if (o.xlabel) g.appendChild(s('text', { x: F.m.l + F.pw, y: F.H - 2, 'text-anchor': 'end' }, o.xlabel));
@@ -21926,7 +21962,7 @@ UI.plot = (function () {
     (o.marks || []).forEach(function (k) { top = Math.max(top, k.value); });
     var ymax = o.ymax || (top > 0 ? top * 1.08 : 1);
     /* the value axis as wide as its longest label */
-    var tks = ticks(0, ymax, 5), tstep = niceStep(ymax, 5), tlab = tks.map(function (t) { return tickLabel(t, tstep) + (o.unit || ''); });
+    var tks = ticks(0, ymax, 5), tstep = niceStep(ymax, 5), yl = axisLabels(tks, tstep), tlab = yl.labels.map(function (t) { return t + (o.unit || ''); });
     var markW = (o.marks || []).reduce(function (a, k) { return Math.max(a, String(k.label || '').length); }, 0);
     var m = { l: Math.max(50, Math.round(16 + tlab.reduce(function (a, t) { return Math.max(a, t.length); }, 0) * 6.3)), r: markW ? 14 + markW * 6 : 14, t: 14, b: Math.min(130, 18 + longest * 5.6) };
     var H = o.height || 300, W = m.l + m.r + Math.max(n, 1) * gw, ph = H - m.t - m.b;
@@ -21940,6 +21976,7 @@ UI.plot = (function () {
       svg.appendChild(s('line', { x1: m.l, x2: W - m.r, y1: y, y2: y, style: { stroke: 'var(--line-2)' } }));
       ax.appendChild(s('text', { x: m.l - 6, y: y + 3.5, 'text-anchor': 'end' }, tlab[k]));
     });
+    if (yl.note) ax.appendChild(s('text', { x: m.l - 6, y: Math.max(9, m.t - 4), 'text-anchor': 'end' }, yl.note));
     svg.appendChild(s('line', { x1: m.l, x2: W - m.r, y1: m.t + ph + 0.5, y2: m.t + ph + 0.5, style: { stroke: 'var(--line)' } }));
     for (i = 0; i < n; i++) {
       var gx = m.l + i * gw + Math.max(3, (gw - (o.stacked ? bw : ns * bw)) / 2), acc = 0;
@@ -21978,6 +22015,7 @@ UI.plot = (function () {
   }
 
   return { Chrom: Chrom, lines: lines, sticks: sticks, scatter: scatter, bars: bars, hist: hist, ticks: ticks, niceStep: niceStep, tickLabel: tickLabel, sampleBars: sampleBars,
+           axisLabels: axisLabels, numStyle: numStyle, NUM_STYLES: NUM_STYLES,
            withLight: withLight, svgToPng: svgToPng, pngDpi: pngDpi, SvgCtx: SvgCtx };
 })();
 
@@ -22733,7 +22771,7 @@ var APP = (function () {
   var LABELS = { home: 'Home', analyse: 'Analyse', compare: 'Compare', structure: 'Structure', library: 'Library', guide: 'Guide' };
   var DEFAULT_SETTINGS = { profile: 'auto', reduction: 'auto', fdr: 0.01, maxOligomer: '', tol: 'auto', ms2: true, uv: true, rt0: '', rt1: '', focused: true, refs: true,
                            autoLibs: false, polarity: 'auto' };
-  var NAME = 'MuroSense', VERSION = '3.27';
+  var NAME = 'MuroSense', VERSION = '3.29';
 
   var A = {
     NAME: NAME, VERSION: VERSION, runs: [], current: null, view: 'home', views: {},
@@ -23541,6 +23579,7 @@ APP.views.analyse = (function () {
     A.on('settings', function () { syncSettings(); renderRailFoot(); renderInfo(); });
     A.on('libraries', function () { if (rail) renderRail(); });
     A.on('theme', function () { if (chrom) chrom.draw(); });
+    A.on('axisnum', function () { if (chrom) chrom.draw(); if (refreshTab) refreshTab(); });
     render();
   }
   /* settings changed elsewhere (a library chosen for analysis, say) */
@@ -23903,7 +23942,7 @@ APP.views.analyse = (function () {
   /* ---------------- right side: chromatogram over tables ---------------- */
   function renderMain() {
     UI.clear(mainArea);
-    switchTab = null;
+    switchTab = null; refreshTab = null;
     chrom = null; chromRun = null; tbodyEl = null; hlRow = null;
     var run = A.currentRun();
     if (!run) { mainArea.appendChild(emptyMain()); return; }
@@ -23964,7 +24003,8 @@ APP.views.analyse = (function () {
         h('h3', { style: { flex: 'none' } }, 'Chromatogram'), legend, h('span', { class: 'spacer' }),
         viewBtn,
         h('button', { class: 'btn sm', title: 'Save the chromatogram as shown (vector figure, light background)', onclick: function () { saveChrom(run, 'svg'); } }, UI.icon('download'), 'SVG'),
-        h('button', { class: 'btn sm', title: 'Save the chromatogram as shown (picture at three times the size, light background)', onclick: function () { saveChrom(run, 'png'); } }, UI.icon('download'), 'PNG')),
+        h('button', { class: 'btn sm', title: 'Save the chromatogram as shown (picture at three times the size, light background)', onclick: function () { saveChrom(run, 'png'); } }, UI.icon('download'), 'PNG'),
+        numSel()),
       h('div', { style: { flex: '1 1 auto', 'min-height': 0, display: 'flex', padding: '4px 6px 2px' } }, host)));
     mainArea.appendChild(splitter('chrom'));
     /* tables */
@@ -23984,8 +24024,20 @@ APP.views.analyse = (function () {
       var btn = UI.$$('button', bar).filter(function (b, i) { return tabs[i][0] === name; })[0];
       if (btn) btn.focus({ preventScroll: true });
     };
+    /* the open tab drawn again where it was (its plots after a change of axis numbers) */
+    refreshTab = function () { var top = body.scrollTop; showTab(run, body); body.scrollTop = top; };
     buildChrom(run, host, legend, function () { viewBtn.textContent = atFull() ? 'Identified region' : 'Whole run'; });
     showTab(run, body);
+  }
+  /* how large numbers on intensity axes are written: in every plot, here and
+     in Compare, and in saved figures */
+  function numSel() {
+    var sel = h('select', { class: 'input', style: { width: 'auto', padding: '3px 6px', 'font-size': '12.5px' }, 'aria-label': 'Axis numbers',
+      title: 'Axis numbers: how large intensities are written on the axes of every plot and saved figure',
+      onchange: function () { UI.store.set('axisNum', sel.value); A.emit('axisnum'); } },
+      UI.plot.NUM_STYLES.map(function (x) { return h('option', { value: x[0] }, x[1]); }));
+    sel.value = UI.plot.numStyle();
+    return sel;
   }
   function atFull() {
     if (!chrom || !chrom.view) return false;
@@ -24208,7 +24260,7 @@ APP.views.analyse = (function () {
   }
 
   /* open one of the result tabs from elsewhere (the summary's fit warning) */
-  var switchTab = null;
+  var switchTab = null, refreshTab = null;
   function showTabByName(name) {
     if (switchTab) switchTab(name); else { ui.tab = name; mainKey = null; render(); }
     var pane = mainArea && mainArea.querySelector('.ws-tabs');
@@ -28018,6 +28070,12 @@ APP.views.compare = (function () {
     var areaAll = cats.every(function (Ci) { return Ci.it.area; });
     var tk = UI.plot.ticks(lo, hi, big ? 6 : 4), stp = UI.plot.niceStep(hi - lo, big ? 6 : 4);
     var tlab = tk.map(function (t) { return Mo.lr ? (Math.abs(t) < 1e-9 ? '0' : (t > 0 ? '+' : '−') + UI.plot.tickLabel(Math.abs(t), stp)) : (areaAll ? T.fmtArea(t) : UI.plot.tickLabel(t, stp)); });
+    /* areas run to millions: written as the viewer chose (×10ⁿ in the axis title when it is shown) */
+    if (areaAll && !Mo.lr && UI.plot.numStyle() !== 'si') {
+      var axL = UI.plot.axisLabels(tk, stp, UI.plot.numStyle() === 'factor' && !(showAx && ylab) ? 'pow' : null);
+      tlab = axL.labels;
+      if (axL.note) ylab = ylab + ' (' + axL.note + ')';
+    }
     /* the layout */
     var pad0 = big ? 16 : 10, tW = S.tickBold ? 700 : 400;
     var tl = title ? wrapF(title, S.titleSize, S.titleBold ? 700 : 400, fam, G.w - 2 * pad0, big ? 3 : 2) : [];
@@ -29389,12 +29447,13 @@ APP.views.library = (function () {
     ['xl', 'Cross-links', 'Donor position – acceptor position'],
     ['lpp', 'Lpp remnant', 'What is left of Braun’s lipoprotein on mDAP after digestion'],
     ['olig', 'Largest oligomer'],
-    ['ch', 'Glycan chains', 'Units joined along one strand (β1–4), as muramidase leaves them']
+    ['ch', 'Glycan chains', 'Units joined along one strand (β1–4), as muramidase leaves them'],
+    ['ex', 'Searched as listed', 'Structures searched exactly as written, beside those the rules generate']
   ];
   function chartFeats(p) {
     var f = { gly: glycanFeats(p), len: [(p.stemLen || [0, 5])[0] + '–' + (p.stemLen || [0, 5])[1]], olig: [String(p.maxOligomer || 3) + '-mer'],
               br: (p.bridges || []).map(bridgeLabel), xl: (p.links || []).slice(), lpp: (p.lpp || []).map(function (x) { return LPP_NAME[x] || x; }),
-              ch: p.chains ? ['up to ' + (p.chainMax || 2) + ' units'] : [] };
+              ch: p.chains ? ['up to ' + (p.chainMax || 2) + ' units'] : [], ex: uniqList((p.extras || []).map(String)) };
     for (var i = 0; i < 5; i++) f['p' + (i + 1)] = uniqList(((p.stem || [])[i] || []).map(function (t) { return resLabel(t, i + 1); }));
     if (f.br.length) f.brNote = 'on position ' + (p.bridgeAt || 3) + (p.bridgeOptional !== false ? ', optional' : '') + (p.directLinks === false ? '; links only through the bridge' : '');
     return f;
@@ -29402,73 +29461,133 @@ APP.views.library = (function () {
   function chemChart() {
     var Md, showPools = UI.store.get('chartPools', false);
     var ids = L.PROFILE_ORDER.slice(), pools = L.POOL_ORDER.slice();
-    var feats = {};
-    ids.concat(pools).forEach(function (id) { feats[id] = chartFeats(L.PROFILES[id]); });
-    /* how many sacculus chemistries have each value */
-    var count = {};
-    ids.forEach(function (id) { CHART_COLS.forEach(function (c) { (feats[id][c[0]] || []).forEach(function (v) { var k = c[0] + '|' + v; count[k] = (count[k] || 0) + 1; }); }); });
-    function kind(col, v) { var n = count[col + '|' + v] || 0; return n === ids.length ? 'all' : n === 1 ? 'one' : n === 0 ? 'none' : 'some'; }
-    function chip(col, v) {
-      var k = kind(col, v), n = count[col + '|' + v] || 0;
-      return h('span', { class: 'cc ' + k, 'data-v': col + '|' + v, title: v + ': ' + (k === 'all' ? 'in every built-in chemistry' : k === 'one' ? 'only in this chemistry' : k === 'none' ? 'not in the sacculus chemistries' : 'in ' + n + ' of ' + ids.length + ' chemistries') },
-        k === 'one' ? '★ ' : null, v);
-    }
-    function cell(id, c) {
-      var vals = feats[id][c[0]] || [], max = c[0] === 'p4' ? 5 : 12;
-      if (!vals.length) return h('td', { class: 'cc-none' }, '–');
-      var shown = vals.slice(0, max).map(function (v) { return chip(c[0], v); });
-      if (vals.length > max) shown.push(h('span', { class: 'cc more', title: vals.slice(max).join(', ') }, '+' + (vals.length - max) + ' more'));
-      return h('td', null, h('div', { class: 'cc-wrap' }, shown), c[0] === 'br' && feats[id].brNote ? h('div', { class: 'tiny muted' }, feats[id].brNote) : null);
-    }
-    function row(id, pool) {
-      var p = L.PROFILES[id];
-      return h('tr', { class: pool ? 'pool' : '' },
-        h('th', { scope: 'row', class: 'cc-name' }, h('button', { class: 'linkish', type: 'button', title: 'Open ' + p.short + ' in Library', onclick: function () { Md.close(); select(id); } }, p.short),
-          h('div', { class: 'tiny muted' }, pool ? 'precursors and recycling products' : (p.examples || ''))),
-        CHART_COLS.map(function (c) { return cell(id, c); }));
-    }
-    var table = h('table', { class: 'tbl cc-tbl' },
-      h('thead', null, h('tr', null, h('th', { class: 'cc-name' }, 'Chemistry'), CHART_COLS.map(function (c) { return h('th', { title: c[2] || null }, c[1]); }))),
-      h('tbody', null, ids.map(function (id) { return row(id, false); })),
-      h('tbody', { class: 'cc-pools', hidden: !showPools }, h('tr', null, h('td', { colspan: CHART_COLS.length + 1, class: 'eyebrow', style: { 'padding-top': '14px' } }, 'Cytoplasmic pools')),
-        pools.map(function (id) { return row(id, true); })));
-    /* pointing at a value lights it up in every row */
-    var lit = null;
-    table.addEventListener('mouseover', function (e) {
-      var c = e.target && e.target.closest ? e.target.closest('[data-v]') : null, k = c ? c.getAttribute('data-v') : null;
-      if (k === lit) return;
-      UI.$$('.cc.hl', table).forEach(function (x) { x.classList.remove('hl'); });
-      lit = k;
-      if (k) UI.$$('.cc', table).forEach(function (x) { if (x.getAttribute('data-v') === k) x.classList.add('hl'); });
-    });
-    table.addEventListener('mouseleave', function () { lit = null; UI.$$('.cc.hl', table).forEach(function (x) { x.classList.remove('hl'); }); });
-    /* the summary: what all share, and what only one has, by feature */
-    var common = {}, unique = {};
-    CHART_COLS.forEach(function (c) {
-      Object.keys(count).forEach(function (k) {
-        if (k.split('|')[0] !== c[0]) return;
-        var v = k.slice(c[0].length + 1);
-        if (count[k] === ids.length) (common[c[0]] = common[c[0]] || []).push(v);
-        if (count[k] === 1) ids.forEach(function (id) { if ((feats[id][c[0]] || []).indexOf(v) >= 0) { var u = unique[id] = unique[id] || {}; (u[c[0]] = u[c[0]] || []).push(v); } });
+    /* the user's own libraries join the chart under their library value ('lib:…') */
+    var prof = {}, feats = {};
+    ids.concat(pools).forEach(function (id) { prof[id] = L.PROFILES[id]; });
+    A.libraries.forEach(function (lb) { try { prof['lib:' + lb.id] = profileOf('lib:' + lb.id); } catch (e) { /* a library that cannot be read is left out */ } });
+    Object.keys(prof).forEach(function (id) { if (prof[id]) { try { feats[id] = chartFeats(prof[id]); } catch (e) { /* left out */ } } });
+    var libs = A.libraries.map(function (lb) { return 'lib:' + lb.id; }).filter(function (id) { return feats[id]; });
+    var everyRow = ids.concat(libs, pools);
+    function nm(id) { return nameOf(id); }
+    /* rows ticked for a comparison; while comparing, only they are shown and
+       every colour is worked out among them alone */
+    var picked = {}, comparing = false;
+    var wrap = h('div', { class: 'cc-body' });
+    function pickedList() { return everyRow.filter(function (id) { return picked[id]; }); }
+
+    function build() {
+      UI.clear(wrap);
+      var basis = comparing ? pickedList() : ids, nB = basis.length;
+      /* how many rows of the basis have each value */
+      var count = {};
+      basis.forEach(function (id) { CHART_COLS.forEach(function (c) { (feats[id][c[0]] || []).forEach(function (v) { var k = c[0] + '|' + v; count[k] = (count[k] || 0) + 1; }); }); });
+      function kind(col, v) { var n = count[col + '|' + v] || 0; return n === nB ? 'all' : n === 1 ? 'one' : n === 0 ? 'none' : 'some'; }
+      function chip(col, v) {
+        var k = kind(col, v), n = count[col + '|' + v] || 0;
+        var tip = comparing
+          ? (k === 'all' ? 'in every one compared' : k === 'one' ? 'only in this one of those compared' : 'in ' + n + ' of the ' + nB + ' compared')
+          : (k === 'all' ? 'in every built-in chemistry' : k === 'one' ? 'only in this chemistry' : k === 'none' ? 'in none of the built-in sacculus chemistries' : 'in ' + n + ' of ' + nB + ' chemistries');
+        return h('span', { class: 'cc ' + k, 'data-v': col + '|' + v, title: v + ': ' + tip }, k === 'one' ? '★ ' : null, v);
+      }
+      function cell(id, c) {
+        var vals = feats[id][c[0]] || [], max = c[0] === 'p4' ? 5 : c[0] === 'ex' ? 3 : 12;
+        if (!vals.length) return h('td', { class: 'cc-none' }, '–');
+        var shown = vals.slice(0, max).map(function (v) { return chip(c[0], v); });
+        if (vals.length > max) shown.push(h('span', { class: 'cc more', title: vals.slice(max).join(', ') }, '+' + (vals.length - max) + ' more'));
+        return h('td', null, h('div', { class: 'cc-wrap' }, shown), c[0] === 'br' && feats[id].brNote ? h('div', { class: 'tiny muted' }, feats[id].brNote) : null);
+      }
+      function sub(id) {
+        var lib = A.libFromValue(id);
+        if (lib) return lib.type === 'precursors' ? 'my library · cytoplasmic pool' : 'my library';
+        return pools.indexOf(id) >= 0 ? 'precursors and recycling products' : (prof[id].examples || '');
+      }
+      function row(id) {
+        var cls = pools.indexOf(id) >= 0 ? 'pool' : A.libFromValue(id) ? 'mine' : '';
+        var cb = comparing ? null : h('input', { type: 'checkbox', checked: !!picked[id], 'aria-label': 'Tick ' + nm(id) + ' to compare',
+          title: 'Tick two or more rows, then Compare selected',
+          onchange: function () { if (cb.checked) picked[id] = true; else delete picked[id]; syncBar(); } });
+        return h('tr', { class: cls },
+          h('th', { scope: 'row', class: 'cc-name' }, h('div', { class: 'cc-namerow' }, cb,
+            h('div', null, h('button', { class: 'linkish', type: 'button', title: 'Open ' + nm(id) + ' in Library', onclick: function () { Md.close(); select(id); } }, nm(id)),
+              h('div', { class: 'tiny muted' }, sub(id))))),
+          CHART_COLS.map(function (c) { return cell(id, c); }));
+      }
+      function group(label, list, extra) {
+        return h('tbody', extra || null, h('tr', { class: 'cc-group' }, h('td', { colspan: CHART_COLS.length + 1, class: 'eyebrow' }, label)), list.map(row));
+      }
+      var head = h('thead', null, h('tr', null, h('th', { class: 'cc-name' }, comparing ? 'Compared' : 'Chemistry'), CHART_COLS.map(function (c) { return h('th', { title: c[2] || null }, c[1]); })));
+      var table;
+      if (comparing) table = h('table', { class: 'tbl cc-tbl' }, head, h('tbody', null, basis.map(row)));
+      else table = h('table', { class: 'tbl cc-tbl' }, head,
+        h('tbody', null, ids.map(row)),
+        libs.length ? group('My libraries', libs) : null,
+        group('Cytoplasmic pools', pools, { class: 'cc-pools', hidden: !showPools }));
+      /* pointing at a value lights it up in every row */
+      var lit = null;
+      table.addEventListener('mouseover', function (e) {
+        var c = e.target && e.target.closest ? e.target.closest('[data-v]') : null, k = c ? c.getAttribute('data-v') : null;
+        if (k === lit) return;
+        UI.$$('.cc.hl', table).forEach(function (x) { x.classList.remove('hl'); });
+        lit = k;
+        if (k) UI.$$('.cc', table).forEach(function (x) { if (x.getAttribute('data-v') === k) x.classList.add('hl'); });
       });
-    });
-    function byCol(o) {
-      return h('div', { class: 'cc-wrap' }, CHART_COLS.filter(function (c) { return o[c[0]]; }).map(function (c) {
-        return h('span', { class: 'cc-pair' }, h('span', { class: 'tiny muted' }, c[1] + ':'), o[c[0]].map(function (v) { return chip(c[0], v); }));
-      }));
+      table.addEventListener('mouseleave', function () { lit = null; UI.$$('.cc.hl', table).forEach(function (x) { x.classList.remove('hl'); }); });
+      /* the summary: what all share, and what only one has, by feature */
+      var common = {}, unique = {};
+      CHART_COLS.forEach(function (c) {
+        Object.keys(count).forEach(function (k) {
+          if (k.split('|')[0] !== c[0]) return;
+          var v = k.slice(c[0].length + 1);
+          if (count[k] === nB) (common[c[0]] = common[c[0]] || []).push(v);
+          if (count[k] === 1) basis.forEach(function (id) { if ((feats[id][c[0]] || []).indexOf(v) >= 0) { var u = unique[id] = unique[id] || {}; (u[c[0]] = u[c[0]] || []).push(v); } });
+        });
+      });
+      function byCol(o) {
+        return h('div', { class: 'cc-wrap' }, CHART_COLS.filter(function (c) { return o[c[0]]; }).map(function (c) {
+          return h('span', { class: 'cc-pair' }, h('span', { class: 'tiny muted' }, c[1] + ':'), o[c[0]].map(function (v) { return chip(c[0], v); }));
+        }));
+      }
+      var uniqRows = basis.filter(function (id) { return unique[id]; }).map(function (id) { return h('div', { class: 'cc-uniq' }, h('b', null, nm(id)), byCol(unique[id])); });
+      /* rows compared whose rules come out the same in every column */
+      var same = [];
+      if (comparing) {
+        var byKey = {};
+        basis.forEach(function (id) { var k = JSON.stringify(CHART_COLS.map(function (c) { return (feats[id][c[0]] || []).slice().sort(); }).concat([feats[id].brNote || ''])); (byKey[k] = byKey[k] || []).push(id); });
+        Object.keys(byKey).forEach(function (k) { if (byKey[k].length > 1) same.push(byKey[k]); });
+      }
+      /* the bar above the table: tick rows, then compare just those */
+      var nPick = h('b'), cmpBtn = h('button', { class: 'btn sm primary', type: 'button', onclick: function () { if (pickedList().length >= 2) { comparing = true; build(); } } }, UI.icon('table'), 'Compare selected');
+      var clrBtn = h('button', { class: 'btn sm ghost', type: 'button', onclick: function () { picked = {}; build(); } }, 'Clear ticks');
+      function syncBar() {
+        var n = pickedList().length;
+        nPick.textContent = n ? n + ' ticked' : 'Tick two or more rows to compare them';
+        cmpBtn.disabled = n < 2; clrBtn.hidden = !n;
+      }
+      var bar = comparing
+        ? h('div', { class: 'cc-bar on' }, h('span', null, 'Comparing ', h('b', null, nB), ': ', basis.map(nm).join(' · ')), h('span', { class: 'spacer' }),
+            h('button', { class: 'btn sm', type: 'button', onclick: function () { comparing = false; build(); } }, UI.icon('left'), 'Back to all chemistries'))
+        : h('div', { class: 'cc-bar' }, nPick, h('span', { class: 'spacer' }), clrBtn, cmpBtn);
+      if (!comparing) syncBar();
+      var poolsBox = h('input', { type: 'checkbox', checked: showPools, onchange: function () { showPools = poolsBox.checked; UI.store.set('chartPools', showPools); var tb = UI.$('.cc-pools', table); if (tb) tb.hidden = !showPools; } });
+      var every = comparing ? 'in every one compared' : 'in every chemistry';
+      wrap.appendChild(bar);
+      wrap.appendChild(h('div', { class: 'cc-legend' }, h('span', null, h('span', { class: 'cc all' }, 'grey'), every), h('span', null, h('span', { class: 'cc some' }, 'outlined'), 'in some'),
+        h('span', null, h('span', { class: 'cc one' }, '★ filled'), 'only in one'),
+        !comparing && libs.length ? h('span', null, h('span', { class: 'cc none' }, 'dashed'), 'in no built-in chemistry') : null,
+        h('span', { class: 'spacer' }), comparing ? null : h('label', { class: 'check small' }, poolsBox, ' show the cytoplasmic pools')));
+      wrap.appendChild(h('div', { class: 'tbl-wrap cc-scroll' }, table));
+      wrap.appendChild(h('div', { class: 'cc-sum' },
+        h('div', null, h('h4', null, comparing ? 'Shared by all ' + nB + ' compared' : 'Shared by all ' + nB + ' chemistries'), Object.keys(common).length ? byCol(common) : h('span', { class: 'small muted' }, 'nothing beyond GlcNAc-MurNAc')),
+        h('div', null, h('h4', null, comparing ? 'Found in only one of them' : 'Found in only one chemistry'), uniqRows.length ? h('div', { class: 'cc-uniq-list' }, uniqRows) : h('span', { class: 'small muted' }, 'none')),
+        same.length ? h('div', null, h('h4', null, 'The same in every column'), same.map(function (g) { return h('div', { class: 'small' }, g.map(nm).join(' = ')); }),
+          h('p', { class: 'note', style: { margin: '4px 0 0' } }, 'Their rules match as the chart shows them; settings it does not list (custom residues and their masses, modifications per molecule, the precursors searched) may still differ: open each to check.')) : null));
+      wrap.appendChild(h('p', { class: 'note' }, 'Every chemistry also searches the plain GlcNAc-MurNAc disaccharide with its stems. Residues are named with their usual configuration (L-Ala, D-iGlu, D-iGln, m-DAP, D-Ala); -NH₂ marks an amidated form. ' +
+        (comparing ? 'Outlined values are in some of those compared but not all: point at one to see which. ' : 'Your own libraries are coloured against the built-in chemistries until you compare them. ') +
+        'The full rules and every structure generated are on each chemistry’s page.'));
+      if (Md) UI.dl.attach(wrap, 'MuroSense');
     }
-    var uniqRows = ids.filter(function (id) { return unique[id]; }).map(function (id) { return h('div', { class: 'cc-uniq' }, h('b', null, L.PROFILES[id].short), byCol(unique[id])); });
-    var poolsBox = h('input', { type: 'checkbox', checked: showPools, onchange: function () { showPools = poolsBox.checked; UI.store.set('chartPools', showPools); UI.$('.cc-pools', table).hidden = !showPools; } });
-    var body = [
-      h('div', { class: 'cc-legend' }, h('span', null, h('span', { class: 'cc all' }, 'grey'), 'in every chemistry'), h('span', null, h('span', { class: 'cc some' }, 'outlined'), 'in some'),
-        h('span', null, h('span', { class: 'cc one' }, '★ filled'), 'only in one'), h('span', { class: 'spacer' }), h('label', { class: 'check small' }, poolsBox, ' show the cytoplasmic pools')),
-      h('div', { class: 'tbl-wrap cc-scroll' }, table),
-      h('div', { class: 'cc-sum' },
-        h('div', null, h('h4', null, 'Shared by all ' + ids.length + ' chemistries'), Object.keys(common).length ? byCol(common) : h('span', { class: 'small muted' }, 'nothing beyond GlcNAc-MurNAc')),
-        h('div', null, h('h4', null, 'Found in only one chemistry'), uniqRows.length ? h('div', { class: 'cc-uniq-list' }, uniqRows) : h('span', { class: 'small muted' }, 'none'))),
-      h('p', { class: 'note' }, 'Every chemistry also searches the plain GlcNAc-MurNAc disaccharide with its stems. Residues are named with their usual configuration (L-Ala, D-iGlu, D-iGln, m-DAP, D-Ala); -NH₂ marks an amidated form. The full rules and every structure generated are on each chemistry’s page; Compare… on that page sets two side by side, rule by rule.')
-    ];
-    Md = UI.modal({ title: 'Chemistry chart', sub: 'The built-in chemistries side by side: what they share and what sets each apart. Point at a value to see it in every row; click a name to open it.', wide: true, body: body });
+    build();
+    Md = UI.modal({ title: 'Chemistry chart', sub: 'The built-in chemistries and your own libraries side by side: what they share and what sets each apart. Tick two or more rows and Compare selected to see just those; point at a value to see it in every row; click a name to open it.', wide: true, body: [wrap] });
     UI.dl.attach(Md.body, 'MuroSense');
   }
 
@@ -31028,7 +31147,7 @@ APP.views.guide = (function () {
           ['Leuconostoc (Lys, D-Lac)', 'D-lactate at position 5, Ala and Ala-Ser bridges', 'Billot-Klein et al. 1994'],
           ['L. plantarum-type', 'amidated mDAP, D-lactate at position 5', 'Bernard et al. 2011']
         ].map(function (r) { return h('tr', null, h('td', null, h('b', null, r[0])), h('td', { class: 'small' }, r[1]), h('td', { class: 'small' }, r[2])); })))),
-      p('Library shows each chemistry’s full rules, its commonest structures drawn, and every monomer and dimer it generates. ', h('b', null, 'Chemistry chart'), ' (top of Library, or the table icon by Built-in chemistries) sets all of them side by side, feature by feature: values every chemistry has are grey, values only one has are filled and starred, and pointing at one lights it up in every row. ', h('b', null, 'Curated reference list. '), 'Library → Curated muropeptides lists 621 muropeptides from the literature (data version 2), each with its PGLang structure, literature names, organisms and review status. ' +
+      p('Library shows each chemistry’s full rules, its commonest structures drawn, and every monomer and dimer it generates. ', h('b', null, 'Chemistry chart'), ' (top of Library, or the table icon by Built-in chemistries) sets all of them side by side, with your own libraries below them, feature by feature: values every chemistry has are grey, values only one has are filled and starred, and pointing at one lights it up in every row. Tick two or more rows (built-in chemistries, your libraries or both) and press Compare selected: only those stay, and every colour and the Shared and Found-in-only-one lists are worked out among them alone, so you see at once what they have in common and what sets each apart. ', h('b', null, 'Curated reference list. '), 'Library → Curated muropeptides lists 621 muropeptides from the literature (data version 2), each with its PGLang structure, literature names, organisms and review status. ' +
         'In Analyse only the entries whose position-3 residue and bridges fit the chosen chemistry are searched with it, so a Gram-positive run is not offered mDAP species.'),
       p(h('b', null, 'When no chemistry fits. '), 'If the chosen chemistry explains less than 60% of the signal that fragments like a muropeptide, the summary says so and offers two ways on: the Unexplained tab, and a library started from the run (below). When the runner-up explains almost as much (97% or more), the summary names it.'),
       p(h('b', null, 'Exports. '), 'Every chemistry, library and the reference list can be written as a PGFinder mass list, a full CSV, or a predicted ', h('b', null, 'spectral library (.msp)'), ' for MS-DIAL: each structure is fragmented in silico, as [M+H]⁺ and, above 800 Da, [M+2H]²⁺, NaBH₄-reduced or not as chosen in the table.')]));
@@ -31119,6 +31238,7 @@ APP.views.guide = (function () {
         gl('Base peak', 'The intensity of the strongest ion in each scan. Sharper than the TIC when the background is high.'),
         gl('High-energy TIC', 'The total ion current of the MSᴱ high-energy scans (dashed), where the fragments are.'),
         gl('UV background', 'The smooth background fitted under the UV peaks (dotted): the unresolved hump and the baseline drift. It is not counted in any species’ UV area.'),
+        gl('Axis 2×10⁵, 2 (×10⁵), 2.0E5, 200k', 'The menu beside PNG on the chromatogram: how large intensities are written on the axes of every plot (chromatogram, elution, UV, MS/MS, Compare) and of saved figures. One power of ten serves a whole axis; axes below 10⁴ keep plain numbers.'),
         gl('MSᴱ used, MS1 only', 'Whether fragment evidence was used for this run. With MS1 only, far fewer species pass a strict FDR; 5% is a reasonable screen for such data.'),
         gl('MS/MS-supported', 'Above the Species table: shows only species whose fragments in the high-energy scans support the structure (p < 0.01).')]),
       gh('Tags in the Species table'),
@@ -31166,6 +31286,7 @@ APP.views.guide = (function () {
       li([
         gl('Built-in chemistries, Cytoplasmic pools', 'The chemistries that come with MuroSense. The pools are for a soluble (cytoplasmic) extract rather than sacculi: the UDP-sugars and UDP-MurNAc-peptides of the Mur pathway, lipid I and II, and the recycling products. Automatic does not try them; choose one by hand.'),
         gl('Reference list (Curated muropeptides)', 'Muropeptides from the literature, with their names and organisms.'),
+        gl('Compare selected', 'In the Chemistry chart: shows only the rows you ticked, with grey, outlined and starred worked out among them, and the lists of what all of them share and what only one has.'),
         gl('Also searched as listed', 'Structures a chemistry searches exactly as written, beside those its rules generate.'),
         gl('PGFinder masses', 'Saves the structures and their monoisotopic masses in the PGFinder database format, to use the same search space in PGFinder.'),
         gl('Use for analyses', 'Makes this chemistry the one new analyses search; re-analyse the open run to apply it there.'),
